@@ -219,7 +219,7 @@ sudo systemctl status orchestra
 sudo journalctl -u orchestra -f
 ```
 
-## 6. Connect from Frontend
+## 6. Connect from Browser
 
 ### SSH Tunnel (Required)
 
@@ -233,10 +233,9 @@ ssh -L 8000:localhost:8000 -L 8001:localhost:8001 root@YOUR_DROPLET_IP
 ssh -f -N -L 8000:localhost:8000 -L 8001:localhost:8001 root@YOUR_DROPLET_IP
 ```
 
-Then in the desktop app:
-1. Open Orchestra
-2. Click hub connection indicator
-3. Connect to: `http://localhost:8000`
+Then open your browser to: `http://localhost:8000`
+
+The hub serves both the API and the frontend UI.
 
 **Tip:** Add to `~/.ssh/config` for convenience:
 ```
@@ -246,7 +245,7 @@ Host orchestra
     LocalForward 8000 localhost:8000
     LocalForward 8001 localhost:8001
 ```
-Then just run `ssh orchestra` to open the tunnel.
+Then just run `ssh orchestra` to open the tunnel, and browse to `http://localhost:8000`.
 
 ### Option: Nginx Reverse Proxy (Public Access)
 

@@ -37,3 +37,7 @@ Thumbs.db
 # Node (for frontend)
 node_modules/
 .next/
+
+# Rust/Tauri (deprecated)
+target/
+Cargo.lock

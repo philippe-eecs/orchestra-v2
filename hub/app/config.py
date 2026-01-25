@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./orchestra.db"
-    cors_origins: list[str] = ["http://localhost:1420", "http://localhost:5173", "tauri://localhost"]
+    cors_origins: list[str] = ["http://localhost:1420", "http://localhost:5173", "http://localhost:8000", "tauri://localhost"]
     debug: bool = True
 
     # Executor service URL (runs on VM or locally for dev)

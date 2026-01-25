@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Agent Executor Service")
 
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 # Global managers
 tmux_manager = TmuxManager()
 worktree_manager = WorktreeManager()

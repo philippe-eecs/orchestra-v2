@@ -1,6 +1,8 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.db.database import engine, Base, SessionLocal
@@ -64,3 +66,9 @@ app.include_router(launch_router)
 @app.get("/health")
 def health_check():
     return {"status": "ok", "version": "2.0.0"}
+
+
+# Serve frontend static files (must be after all API routes)
+dist_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dist")
+if os.path.exists(dist_path):
+    app.mount("/", StaticFiles(directory=dist_path, html=True), name="frontend")
