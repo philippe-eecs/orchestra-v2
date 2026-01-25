@@ -1,0 +1,87 @@
+# Default Research-to-Implementation Workflow
+# Agents can modify this file to create custom workflows
+
+name: Default Research-to-Implementation
+description: Standard workflow for breaking down tasks into research and implementation phases
+
+stages:
+  - name: research
+    description: Gather information and understand the problem
+    prompt_template: |
+      Research the following topic and gather relevant information:
+
+      {description}
+
+      Questions to answer:
+      {questions}
+
+      Provide findings with sources.
+    default_tags:
+      - research
+    outputs:
+      - findings
+      - sources
+
+  - name: design
+    description: Create a design or plan based on research
+    depends_on:
+      - research
+    prompt_template: |
+      Based on the research findings, create a design/plan:
+
+      Research findings:
+      {research.findings}
+
+      Requirements:
+      {description}
+
+      Provide a concrete implementation plan.
+    default_tags:
+      - design
+    outputs:
+      - plan
+      - files_to_modify
+
+  - name: implement
+    description: Execute the implementation
+    depends_on:
+      - design
+    prompt_template: |
+      Implement the following plan:
+
+      {design.plan}
+
+      Files to modify:
+      {design.files_to_modify}
+
+      Write clean, tested code.
+    default_tags:
+      - coding
+    auto_fields:
+      - files_to_modify
+      - tests
+      - commit_sha
+    outputs:
+      - commit_sha
+      - pr_number
+
+  - name: review
+    description: Review the implementation
+    depends_on:
+      - implement
+    prompt_template: |
+      Review the following implementation:
+
+      PR: {implement.pr_number}
+      Commit: {implement.commit_sha}
+
+      Check for:
+      - Code quality
+      - Test coverage
+      - Documentation
+      - Edge cases
+    default_tags:
+      - review
+    outputs:
+      - review_notes
+      - approved

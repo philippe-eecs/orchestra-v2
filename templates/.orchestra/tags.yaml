@@ -1,0 +1,35 @@
+# Custom tags for organizing nodes
+# Agents can modify this file to add new tags
+
+tags:
+  - name: research
+    color: "#3B82F6"  # blue
+    description: "Research and exploration tasks"
+
+  - name: coding
+    color: "#10B981"  # green
+    description: "Implementation and coding tasks"
+
+  - name: docs
+    color: "#8B5CF6"  # purple
+    description: "Documentation tasks"
+
+  - name: review
+    color: "#F59E0B"  # amber
+    description: "Code review and feedback"
+
+  - name: urgent
+    color: "#EF4444"  # red
+    description: "High priority items"
+
+  - name: blocked
+    color: "#6B7280"  # gray
+    description: "Waiting on external dependency"
+
+  - name: testing
+    color: "#06B6D4"  # cyan
+    description: "Testing and QA tasks"
+
+  - name: design
+    color: "#EC4899"  # pink
+    description: "Design and architecture tasks"

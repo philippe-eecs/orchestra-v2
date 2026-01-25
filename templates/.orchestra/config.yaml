@@ -1,0 +1,34 @@
+# Orchestra Project Configuration
+
+project:
+  name: ""
+  description: ""
+  created_at: ""
+
+hub:
+  url: "http://159.65.109.198:8000"
+  sync_interval: 5000  # ms
+
+agents:
+  claude:
+    enabled: true
+    default_mode: background
+    model: "claude-sonnet-4-20250514"
+  codex:
+    enabled: true
+    default_mode: background
+    model: "gpt-5.2-codex"
+  gemini:
+    enabled: true
+    default_mode: background
+    model: "gemini-3-pro-preview"
+
+calendar:
+  enabled: false
+  sync_deadlines: true
+  calendar_name: "Orchestra Tasks"
+
+ui:
+  theme: "system"
+  dag_layout: "hierarchical"
+  auto_expand_nodes: true
