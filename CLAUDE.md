@@ -67,12 +67,25 @@ The desktop app stores the hub URL in localStorage. Presets available:
 
 See [docs/VM_SETUP.md](docs/VM_SETUP.md) for full provisioning guide.
 
-Quick commands for existing VM:
+### Security Model
+- **Ports 8000-8009**: Private (SSH tunnel only)
+- **Ports 80/443**: Public (for websites)
+- **Port 22**: SSH key authentication
+
+### Quick Access
 ```bash
-ssh orchestra@159.65.109.198
-cd ~/orchestra/hub
+# Open tunnel to hub (required for desktop app)
+ssh -L 8000:localhost:8000 -L 8001:localhost:8001 root@159.65.109.198
+
+# Then connect desktop app to http://localhost:8000
+```
+
+### VM Admin
+```bash
+ssh root@159.65.109.198
+cd /root/hub
 source venv/bin/activate
-sudo systemctl restart orchestra
+# Restart: kill the uvicorn process and relaunch
 ```
 
 ## API Endpoints

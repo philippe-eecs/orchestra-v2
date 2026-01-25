@@ -143,12 +143,11 @@ See [docs/VM_SETUP.md](docs/VM_SETUP.md) for complete provisioning guide includi
 
 ### Connecting Frontend to Remote Hub
 
-1. Launch the desktop app
-2. Click the hub connection indicator (top right)
-3. Select "Remote (SSH)" preset or enter: `http://159.65.109.198:8000`
+The hub runs on private ports, accessible only via SSH tunnel:
 
-For secure access, use SSH tunneling:
 ```bash
-ssh -L 8000:localhost:8000 orchestra@159.65.109.198
-# Then connect to http://localhost:8000
+# Open tunnel (requires SSH key)
+ssh -L 8000:localhost:8000 -L 8001:localhost:8001 root@159.65.109.198
 ```
+
+Then in the desktop app, connect to `http://localhost:8000`

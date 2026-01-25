@@ -54,14 +54,33 @@ chmod 600 /home/orchestra/.ssh/authorized_keys
 
 ### Configure Firewall
 
+The security model uses SSH key authentication for all private services:
+
+| Port | Access | Purpose |
+|------|--------|---------|
+| 22 | SSH keys | Admin access, tunnels |
+| 80, 443 | Public | Websites (future) |
+| 8000-8009 | SSH tunnel only | Private services |
+
 ```bash
-# Enable UFW
+ufw default deny incoming
+ufw default allow outgoing
+
+# SSH - requires key authentication
 ufw allow OpenSSH
-ufw allow 8000/tcp   # Hub REST API
-ufw allow 8001/tcp   # WebSocket (if separate)
+
+# Public web ports (for future public websites)
+ufw allow 80/tcp
+ufw allow 443/tcp
+
+# Private ports: localhost only (accessed via SSH tunnel)
+ufw allow from 127.0.0.1 to any port 8000:8009 proto tcp
+
 ufw enable
 ufw status
 ```
+
+**Result:** Private services (Hub on 8000, Executor on 8001) require SSH tunnel access. No IP whitelisting needed - your SSH key is the authentication.
 
 ### Install System Dependencies
 
@@ -202,27 +221,34 @@ sudo journalctl -u orchestra -f
 
 ## 6. Connect from Frontend
 
-### Option A: Direct Connection (Simple)
+### SSH Tunnel (Required)
 
-Update hub URL in the desktop app:
-1. Open Orchestra desktop app
-2. Click the hub connection indicator
-3. Enter: `http://YOUR_DROPLET_IP:8000`
-
-Or use the preset if using the default VM (159.65.109.198).
-
-### Option B: SSH Tunnel (Secure)
-
-For secure access without exposing ports publicly:
+The hub runs on private ports (8000-8009) accessible only via SSH tunnel:
 
 ```bash
-# On your local machine
-ssh -L 8000:localhost:8000 orchestra@YOUR_DROPLET_IP
+# Open tunnel (keep this terminal open)
+ssh -L 8000:localhost:8000 -L 8001:localhost:8001 root@YOUR_DROPLET_IP
 
-# Then connect frontend to http://localhost:8000
+# Or use a background tunnel
+ssh -f -N -L 8000:localhost:8000 -L 8001:localhost:8001 root@YOUR_DROPLET_IP
 ```
 
-### Option C: Nginx Reverse Proxy (HTTPS)
+Then in the desktop app:
+1. Open Orchestra
+2. Click hub connection indicator
+3. Connect to: `http://localhost:8000`
+
+**Tip:** Add to `~/.ssh/config` for convenience:
+```
+Host orchestra
+    HostName YOUR_DROPLET_IP
+    User root
+    LocalForward 8000 localhost:8000
+    LocalForward 8001 localhost:8001
+```
+Then just run `ssh orchestra` to open the tunnel.
+
+### Option: Nginx Reverse Proxy (Public Access)
 
 For production with SSL:
 
