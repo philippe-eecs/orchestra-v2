@@ -39,7 +39,17 @@
   });
 
   function buildPrompt(): string {
-    let prompt = node.prompt || '';
+    let prompt = '';
+
+    // Include context if available
+    if (node.context) {
+      prompt += `## Context\n${node.context}\n\n`;
+    }
+
+    // Include prompt/instructions
+    if (node.prompt) {
+      prompt += `## Instructions\n${node.prompt}\n`;
+    }
 
     // Append resources to prompt
     if (node.metadata.resources.length > 0) {
@@ -51,7 +61,7 @@
       }
     }
 
-    return prompt;
+    return prompt.trim();
   }
 
   async function launchAgent() {

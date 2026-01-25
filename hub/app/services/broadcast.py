@@ -15,6 +15,8 @@ class ConnectionManager:
 
     def disconnect(self, project_id: int, websocket: WebSocket):
         if project_id in self.active_connections:
+            if websocket not in self.active_connections[project_id]:
+                return
             self.active_connections[project_id].remove(websocket)
             if not self.active_connections[project_id]:
                 del self.active_connections[project_id]

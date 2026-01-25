@@ -40,6 +40,7 @@ def build_node_context(node: NodeModel) -> dict:
             "title": node.title,
             "description": node.description,
             "prompt": node.prompt,
+            "context": node.context,
             "agent_type": node.agent_type,
             "status": node.status,
             "metadata": node.node_metadata or {},

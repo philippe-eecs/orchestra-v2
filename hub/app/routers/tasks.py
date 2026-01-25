@@ -35,11 +35,14 @@ def create_task(task: TaskCreate, db: Session = Depends(get_db)):
         if not project:
             raise HTTPException(status_code=400, detail="Project not found")
 
-    # Validate node exists if provided
+    # Validate node exists if provided and project consistency
+    node = None
     if task.node_id:
         node = db.query(NodeModel).filter(NodeModel.id == task.node_id).first()
         if not node:
             raise HTTPException(status_code=400, detail="Node not found")
+        if task.project_id and node.project_id != task.project_id:
+            raise HTTPException(status_code=400, detail="Node does not belong to project")
 
     db_task = TaskModel(**task.model_dump())
     db.add(db_task)
@@ -70,11 +73,20 @@ def update_task(task_id: int, task: TaskUpdate, db: Session = Depends(get_db)):
         if not project:
             raise HTTPException(status_code=400, detail="Project not found")
 
-    # Validate node exists if being updated
+    # Validate node exists if being updated and project consistency
     if "node_id" in update_data and update_data["node_id"]:
         node = db.query(NodeModel).filter(NodeModel.id == update_data["node_id"]).first()
         if not node:
             raise HTTPException(status_code=400, detail="Node not found")
+        new_project_id = update_data.get("project_id", db_task.project_id)
+        if new_project_id and node.project_id != new_project_id:
+            raise HTTPException(status_code=400, detail="Node does not belong to project")
+    elif "project_id" in update_data and update_data["project_id"]:
+        # If changing project, ensure existing node (if any) matches the new project
+        if db_task.node_id:
+            node = db.query(NodeModel).filter(NodeModel.id == db_task.node_id).first()
+            if node and node.project_id != update_data["project_id"]:
+                raise HTTPException(status_code=400, detail="Node does not belong to project")
 
     for key, value in update_data.items():
         setattr(db_task, key, value)

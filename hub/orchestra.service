@@ -1,0 +1,24 @@
+[Unit]
+Description=Orchestra Hub Service
+After=network.target
+
+[Service]
+Type=simple
+User=orchestra
+Group=orchestra
+WorkingDirectory=/home/orchestra/orchestra/hub
+Environment="PATH=/home/orchestra/orchestra/hub/venv/bin:/usr/local/bin:/usr/bin:/bin"
+# API keys - replace with your actual keys
+Environment="ANTHROPIC_API_KEY=your-anthropic-key"
+Environment="OPENAI_API_KEY=your-openai-key"
+Environment="GOOGLE_API_KEY=your-google-key"
+# Orchestra settings
+Environment="ORCHESTRA_DEBUG=false"
+ExecStart=/home/orchestra/orchestra/hub/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

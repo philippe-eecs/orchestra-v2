@@ -36,6 +36,7 @@ export interface Node {
   status: NodeStatus;
   agent_type?: AgentType;
   prompt?: string;
+  context?: string;
   metadata: NodeMetadata;
   position_x: number;
   position_y: number;
@@ -50,6 +51,7 @@ export interface NodeCreate {
   status?: NodeStatus;
   agent_type?: AgentType;
   prompt?: string;
+  context?: string;
   metadata?: NodeMetadata;
   position_x?: number;
   position_y?: number;
@@ -62,6 +64,7 @@ export interface NodeUpdate {
   status?: NodeStatus;
   agent_type?: AgentType;
   prompt?: string;
+  context?: string;
   metadata?: NodeMetadata;
   position_x?: number;
   position_y?: number;

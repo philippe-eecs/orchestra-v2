@@ -46,6 +46,7 @@ class NodeModel(Base):
     status = Column(String(50), default="pending")
     agent_type = Column(String(50), nullable=True)
     prompt = Column(Text, nullable=True)
+    context = Column(Text, nullable=True)
     node_metadata = Column(JSON, default=dict)
     position_x = Column(Float, default=0.0)
     position_y = Column(Float, default=0.0)

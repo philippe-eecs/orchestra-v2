@@ -7,6 +7,7 @@
   import TopBar from './components/layout/TopBar.svelte';
   import LeftSidebar from './components/layout/LeftSidebar.svelte';
   import RightDrawer from './components/layout/RightDrawer.svelte';
+  import BottomPanel from './components/layout/BottomPanel.svelte';
 
   import DagView from './components/views/DagView.svelte';
   import AgentsView from './components/views/AgentsView.svelte';
@@ -63,17 +64,21 @@
   <div class="main">
     <LeftSidebar on:createProject={() => showCreateProjectModal = true} />
 
-    <main class="content">
-      {#if activeView === 'dag'}
-        <DagView />
-      {:else if activeView === 'agents'}
-        <AgentsView />
-      {:else if activeView === 'todo'}
-        <TodoView />
-      {:else if activeView === 'calendar'}
-        <CalendarView />
-      {/if}
-    </main>
+    <div class="center-column">
+      <main class="content">
+        {#if activeView === 'dag'}
+          <DagView />
+        {:else if activeView === 'agents'}
+          <AgentsView />
+        {:else if activeView === 'todo'}
+          <TodoView />
+        {:else if activeView === 'calendar'}
+          <CalendarView />
+        {/if}
+      </main>
+
+      <BottomPanel />
+    </div>
 
     <RightDrawer />
   </div>
@@ -129,6 +134,13 @@
   .main {
     flex: 1;
     display: flex;
+    overflow: hidden;
+  }
+
+  .center-column {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
   }
 

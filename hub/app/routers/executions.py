@@ -351,6 +351,8 @@ class ExecutionConnectionManager:
 
     def disconnect(self, websocket: WebSocket, execution_id: int):
         if execution_id in self.active_connections:
+            if websocket not in self.active_connections[execution_id]:
+                return
             self.active_connections[execution_id].remove(websocket)
             if not self.active_connections[execution_id]:
                 del self.active_connections[execution_id]

@@ -15,6 +15,7 @@
   let status: NodeStatus = 'pending';
   let agentType: AgentType | '' = '';
   let instructions = '';
+  let context = '';
   let deliverables = '';
   let resources: Resource[] = [];
   let newResource: Resource = { kind: 'url', title: '', url: '' };
@@ -32,6 +33,7 @@
     agentType = node.agent_type || '';
     // Use prompt if available, otherwise description
     instructions = node.prompt || node.description || '';
+    context = node.context || '';
     deliverables = node.metadata.deliverables || '';
     resources = [...(node.metadata.resources || [])];
     error = null;
@@ -66,6 +68,7 @@
       status,
       agent_type: agentType || undefined,
       prompt: instructions.trim() || undefined,
+      context: context.trim() || undefined,
       metadata: {
         resources,
         deliverables: deliverables.trim() || undefined,
@@ -98,7 +101,17 @@
             id="edit-instructions"
             bind:value={instructions}
             class="tall"
-            placeholder="Describe the task, context, and detailed instructions..."
+            placeholder="Describe the task and detailed instructions..."
+          ></textarea>
+        </div>
+
+        <div class="field">
+          <label for="edit-context">Context</label>
+          <textarea
+            id="edit-context"
+            bind:value={context}
+            rows="6"
+            placeholder="Background information, codebase details, constraints..."
           ></textarea>
         </div>
 

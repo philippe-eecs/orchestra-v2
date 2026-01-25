@@ -46,6 +46,21 @@ def test_create_template_with_steps_and_edges(client, sample_template_data):
     assert edge["child_id"] == step2["id"]
 
 
+def test_create_template_with_invalid_edge_index(client):
+    """Test 400 when edges reference unknown step indices."""
+    response = client.post("/agent-templates", json={
+        "name": "Invalid Edge Template",
+        "steps": [
+            {"name": "Step 1", "agent_type": "claude", "prompt_template": "..."},
+        ],
+        "edges": [
+            {"parent_id": 0, "child_id": 2}
+        ]
+    })
+    assert response.status_code == 400
+    assert "edge references unknown step index" in response.json()["detail"].lower()
+
+
 def test_list_templates(client):
     """Test listing all templates."""
     # Create two templates

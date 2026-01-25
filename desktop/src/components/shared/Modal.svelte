@@ -70,6 +70,11 @@
     max-height: 90vh;
   }
 
+  .modal.fullscreen .content {
+    flex: 1;
+    min-height: 0;
+  }
+
   header {
     display: flex;
     justify-content: space-between;

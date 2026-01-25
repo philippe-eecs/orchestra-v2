@@ -23,6 +23,7 @@ class NodeBase(BaseModel):
     status: NodeStatus = NodeStatus.PENDING
     agent_type: AgentType | None = None
     prompt: str | None = None
+    context: str | None = None
     metadata: NodeMetadata = Field(default_factory=NodeMetadata)
     position_x: float = 0.0
     position_y: float = 0.0
@@ -38,6 +39,7 @@ class NodeUpdate(BaseModel):
     status: NodeStatus | None = None
     agent_type: AgentType | None = None
     prompt: str | None = None
+    context: str | None = None
     metadata: NodeMetadata | None = None
     position_x: float | None = None
     position_y: float | None = None

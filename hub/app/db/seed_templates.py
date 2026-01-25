@@ -476,6 +476,359 @@ Provide:
             {"parent_idx": 3, "child_idx": 4},  # Edge Cases -> Summary
         ],
     },
+    # 6. Research Swarm
+    {
+        "name": "Research Swarm",
+        "description": "Parallel multi-agent research with cross-review and synthesis for deep analysis",
+        "metadata": {"icon": "research", "is_default": True, "category": "research"},
+        "steps": [
+            # Phase 1: Parallel Research (3 agents)
+            {
+                "name": "Claude Research",
+                "agent_type": "claude",
+                "prompt_template": """You are a research agent tasked with deep analysis.
+
+**Research Topic:**
+{{topic}}
+
+**Context:**
+{{context}}
+
+Conduct thorough research and analysis. Your output MUST include:
+
+## Research Findings
+[Your detailed research and analysis]
+
+## Level of Confidence
+Rate your confidence in these findings: **[HIGH/MEDIUM/LOW]**
+- HIGH: Strong evidence, well-established patterns
+- MEDIUM: Reasonable evidence, some uncertainty
+- LOW: Limited evidence, significant uncertainty
+
+Explain your confidence rating.
+
+## Issues & Concerns
+List any issues, risks, or concerns with this approach:
+1. [Issue 1]
+2. [Issue 2]
+...
+
+## Questions for User
+If you need clarification from the user to improve this research, list your questions here:
+1. [Question 1]
+2. [Question 2]
+...""",
+                "output_format": "markdown",
+                "position_x": 100,
+                "position_y": 100,
+                "thinking_budget": 32000,
+            },
+            {
+                "name": "Gemini Research",
+                "agent_type": "gemini",
+                "prompt_template": """You are a research agent tasked with deep analysis. Use web search if current information would be valuable.
+
+**Research Topic:**
+{{topic}}
+
+**Context:**
+{{context}}
+
+Conduct thorough research and analysis. Your output MUST include:
+
+## Research Findings
+[Your detailed research and analysis - include web sources if searched]
+
+## Level of Confidence
+Rate your confidence in these findings: **[HIGH/MEDIUM/LOW]**
+- HIGH: Strong evidence, well-established patterns
+- MEDIUM: Reasonable evidence, some uncertainty
+- LOW: Limited evidence, significant uncertainty
+
+Explain your confidence rating.
+
+## Issues & Concerns
+List any issues, risks, or concerns with this approach:
+1. [Issue 1]
+2. [Issue 2]
+...
+
+## Questions for User
+If you need clarification from the user to improve this research, list your questions here:
+1. [Question 1]
+2. [Question 2]
+...""",
+                "output_format": "markdown",
+                "position_x": 100,
+                "position_y": 250,
+                "model_version": "gemini-3-pro",
+            },
+            {
+                "name": "Codex Research",
+                "agent_type": "codex",
+                "prompt_template": """You are a research agent tasked with deep analysis, especially from a code/implementation perspective.
+
+**Research Topic:**
+{{topic}}
+
+**Context:**
+{{context}}
+
+Conduct thorough research and analysis. Your output MUST include:
+
+## Research Findings
+[Your detailed research and analysis - focus on implementation feasibility]
+
+## Level of Confidence
+Rate your confidence in these findings: **[HIGH/MEDIUM/LOW]**
+- HIGH: Strong evidence, well-established patterns
+- MEDIUM: Reasonable evidence, some uncertainty
+- LOW: Limited evidence, significant uncertainty
+
+Explain your confidence rating.
+
+## Issues & Concerns
+List any issues, risks, or concerns with this approach:
+1. [Issue 1]
+2. [Issue 2]
+...
+
+## Questions for User
+If you need clarification from the user to improve this research, list your questions here:
+1. [Question 1]
+2. [Question 2]
+...""",
+                "output_format": "markdown",
+                "position_x": 100,
+                "position_y": 400,
+                "reasoning_level": "xhigh",
+            },
+            # Phase 2: Cross-Review (3 agents reviewing all research)
+            {
+                "name": "Claude Review",
+                "agent_type": "claude",
+                "prompt_template": """You are a senior reviewer. Critically analyze ALL research outputs below.
+
+---
+## CLAUDE RESEARCH OUTPUT:
+{{Claude Research}}
+
+---
+## GEMINI RESEARCH OUTPUT:
+{{Gemini Research}}
+
+---
+## CODEX RESEARCH OUTPUT:
+{{Codex Research}}
+
+---
+
+**Your Task:** Provide a critical review of all research findings.
+
+## Agreement Analysis
+What do all agents agree on? What are the points of divergence?
+
+## Critique
+- What did each agent miss?
+- What assumptions are questionable?
+- What additional evidence is needed?
+
+## Synthesized Confidence
+Based on all three perspectives, what is the overall confidence level? **[HIGH/MEDIUM/LOW]**
+
+## Consolidated Issues
+Merge and prioritize all issues raised:
+1. [Critical]
+2. [High Priority]
+3. [Medium Priority]
+
+## Recommended Questions for User
+Which user questions are most valuable to pursue?""",
+                "output_format": "markdown",
+                "position_x": 350,
+                "position_y": 100,
+                "thinking_budget": 32000,
+            },
+            {
+                "name": "Gemini Review",
+                "agent_type": "gemini",
+                "prompt_template": """You are a senior reviewer. Critically analyze ALL research outputs below.
+
+---
+## CLAUDE RESEARCH OUTPUT:
+{{Claude Research}}
+
+---
+## GEMINI RESEARCH OUTPUT:
+{{Gemini Research}}
+
+---
+## CODEX RESEARCH OUTPUT:
+{{Codex Research}}
+
+---
+
+**Your Task:** Provide a critical review of all research findings.
+
+## Agreement Analysis
+What do all agents agree on? What are the points of divergence?
+
+## Critique
+- What did each agent miss?
+- What assumptions are questionable?
+- What additional evidence is needed?
+
+## Synthesized Confidence
+Based on all three perspectives, what is the overall confidence level? **[HIGH/MEDIUM/LOW]**
+
+## Consolidated Issues
+Merge and prioritize all issues raised:
+1. [Critical]
+2. [High Priority]
+3. [Medium Priority]
+
+## Recommended Questions for User
+Which user questions are most valuable to pursue?""",
+                "output_format": "markdown",
+                "position_x": 350,
+                "position_y": 250,
+                "model_version": "gemini-3-pro",
+            },
+            {
+                "name": "Codex Review",
+                "agent_type": "codex",
+                "prompt_template": """You are a senior reviewer. Critically analyze ALL research outputs below.
+
+---
+## CLAUDE RESEARCH OUTPUT:
+{{Claude Research}}
+
+---
+## GEMINI RESEARCH OUTPUT:
+{{Gemini Research}}
+
+---
+## CODEX RESEARCH OUTPUT:
+{{Codex Research}}
+
+---
+
+**Your Task:** Provide a critical review of all research findings.
+
+## Agreement Analysis
+What do all agents agree on? What are the points of divergence?
+
+## Critique
+- What did each agent miss?
+- What assumptions are questionable?
+- What additional evidence is needed?
+
+## Synthesized Confidence
+Based on all three perspectives, what is the overall confidence level? **[HIGH/MEDIUM/LOW]**
+
+## Consolidated Issues
+Merge and prioritize all issues raised:
+1. [Critical]
+2. [High Priority]
+3. [Medium Priority]
+
+## Recommended Questions for User
+Which user questions are most valuable to pursue?""",
+                "output_format": "markdown",
+                "position_x": 350,
+                "position_y": 400,
+                "reasoning_level": "xhigh",
+            },
+            # Phase 3: Final Synthesis
+            {
+                "name": "Final Synthesis",
+                "agent_type": "claude",
+                "prompt_template": """You are the final synthesizer. Compile all research and reviews into a definitive output.
+
+---
+# ORIGINAL RESEARCH
+## Claude Research:
+{{Claude Research}}
+
+## Gemini Research:
+{{Gemini Research}}
+
+## Codex Research:
+{{Codex Research}}
+
+---
+# PEER REVIEWS
+## Claude Review:
+{{Claude Review}}
+
+## Gemini Review:
+{{Gemini Review}}
+
+## Codex Review:
+{{Codex Review}}
+
+---
+
+**Create the final synthesized output:**
+
+# Executive Summary
+[2-3 paragraph summary of findings]
+
+# Detailed Findings
+[Comprehensive synthesis of all research, resolving contradictions]
+
+# Confidence Assessment
+Overall confidence: **[HIGH/MEDIUM/LOW]**
+- Areas of high confidence: [list]
+- Areas of uncertainty: [list]
+
+# Risk Register
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| ... | ... | ... |
+
+# Action Items
+1. [Immediate actions]
+2. [Short-term actions]
+3. [Long-term actions]
+
+# User Input Needed
+These questions require human judgment or domain knowledge:
+1. [Most critical question]
+2. [Second priority question]
+3. [Additional questions...]
+
+# Appendix: Agent Agreement Matrix
+| Topic | Claude | Gemini | Codex | Consensus |
+|-------|--------|--------|-------|-----------|
+| ... | ... | ... | ... | ... |""",
+                "output_format": "markdown",
+                "position_x": 600,
+                "position_y": 250,
+                "thinking_budget": 32000,
+            },
+        ],
+        "edges": [
+            # Research -> Reviews (all research feeds all reviews)
+            {"parent_idx": 0, "child_idx": 3},  # Claude Research -> Claude Review
+            {"parent_idx": 1, "child_idx": 3},  # Gemini Research -> Claude Review
+            {"parent_idx": 2, "child_idx": 3},  # Codex Research -> Claude Review
+            {"parent_idx": 0, "child_idx": 4},  # Claude Research -> Gemini Review
+            {"parent_idx": 1, "child_idx": 4},  # Gemini Research -> Gemini Review
+            {"parent_idx": 2, "child_idx": 4},  # Codex Research -> Gemini Review
+            {"parent_idx": 0, "child_idx": 5},  # Claude Research -> Codex Review
+            {"parent_idx": 1, "child_idx": 5},  # Gemini Research -> Codex Review
+            {"parent_idx": 2, "child_idx": 5},  # Codex Research -> Codex Review
+            # Reviews -> Final Synthesis
+            {"parent_idx": 3, "child_idx": 6},  # Claude Review -> Synthesis
+            {"parent_idx": 4, "child_idx": 6},  # Gemini Review -> Synthesis
+            {"parent_idx": 5, "child_idx": 6},  # Codex Review -> Synthesis
+            # Also feed original research to synthesis for reference
+            {"parent_idx": 0, "child_idx": 6},  # Claude Research -> Synthesis
+            {"parent_idx": 1, "child_idx": 6},  # Gemini Research -> Synthesis
+            {"parent_idx": 2, "child_idx": 6},  # Codex Research -> Synthesis
+        ],
+    },
 ]
 
 

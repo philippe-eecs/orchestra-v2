@@ -19,6 +19,7 @@ def node_to_response(node: NodeModel) -> Node:
         status=node.status,
         agent_type=node.agent_type,
         prompt=node.prompt,
+        context=node.context,
         metadata=NodeMetadata(**node.node_metadata) if node.node_metadata else NodeMetadata(),
         position_x=node.position_x,
         position_y=node.position_y,

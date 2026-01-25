@@ -104,11 +104,15 @@ def create_template(template: AgentTemplateCreate, db: Session = Depends(get_db)
         db.flush()
         step_index_to_id[i] = db_step.id
 
-    # Create edges (edges reference step indices, not IDs)
+    # Create edges (edges reference step indices in this creation request)
     for edge in template.edges:
-        # Edges use step indices from the creation request
-        parent_id = step_index_to_id.get(edge.parent_id, edge.parent_id)
-        child_id = step_index_to_id.get(edge.child_id, edge.child_id)
+        if edge.parent_id not in step_index_to_id or edge.child_id not in step_index_to_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Edge references unknown step index"
+            )
+        parent_id = step_index_to_id[edge.parent_id]
+        child_id = step_index_to_id[edge.child_id]
         db.execute(agent_step_edges.insert().values(parent_id=parent_id, child_id=child_id))
 
     db.commit()

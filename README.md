@@ -1,6 +1,6 @@
-# Orchestra - Project Orchestration App
+# Orchestra V2 - Multi-Agent Orchestration Platform
 
-A lightweight desktop app for project orchestration with DAG-based task visualization and agent swarm coordination.
+A multi-agent orchestration platform for managing software development workflows. The desktop app is a thin client that connects to a hub service running on a remote VM, where all agent executions happen.
 
 ## Architecture
 
@@ -112,3 +112,43 @@ npm run tauri dev
 | Hub Service | FastAPI (Python) |
 | Database | SQLite |
 | Config | YAML + JSON-Schema |
+| Deployment | Ubuntu VM (DigitalOcean) |
+| Agents | Claude CLI, Codex CLI, Gemini CLI |
+
+## Deployment
+
+The hub service runs on a remote VM while the desktop app acts as a thin client.
+
+### Quick Start (Existing VM)
+
+```bash
+# Connect to VM
+ssh orchestra@159.65.109.198
+
+# Restart service
+sudo systemctl restart orchestra
+
+# View logs
+sudo journalctl -u orchestra -f
+```
+
+### Full Setup
+
+See [docs/VM_SETUP.md](docs/VM_SETUP.md) for complete provisioning guide including:
+- Creating a DigitalOcean droplet
+- Installing Python and dependencies
+- Installing AI CLI tools (Claude, Codex, Gemini)
+- Configuring systemd service
+- Setting up HTTPS with Nginx (optional)
+
+### Connecting Frontend to Remote Hub
+
+1. Launch the desktop app
+2. Click the hub connection indicator (top right)
+3. Select "Remote (SSH)" preset or enter: `http://159.65.109.198:8000`
+
+For secure access, use SSH tunneling:
+```bash
+ssh -L 8000:localhost:8000 orchestra@159.65.109.198
+# Then connect to http://localhost:8000
+```

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import { hubUrl, hubConnected, setHubUrl } from '../../stores/hub';
+  import { hubUrl, hubConnected, setHubUrl, HUB_PRESETS, lastSyncTime, markSynced } from '../../stores/hub';
+  import { loadProjects } from '../../stores/projects';
+  import { loadTemplates } from '../../stores/agentTemplates';
   import { api } from '../../lib/api';
   import Modal from '../shared/Modal.svelte';
   import Button from '../shared/Button.svelte';
@@ -11,11 +13,16 @@
 
   let url = $hubUrl;
   let testing = false;
+  let syncing = false;
   let testResult: 'success' | 'error' | null = null;
 
   $: if (open) {
     url = $hubUrl;
     testResult = null;
+  }
+
+  function selectPreset(presetUrl: string) {
+    url = presetUrl;
   }
 
   function handleClose() {
@@ -45,13 +52,56 @@
     setHubUrl(url);
     handleClose();
   }
+
+  async function handleSync() {
+    syncing = true;
+    try {
+      // Reload all data from hub
+      await Promise.all([
+        loadProjects(),
+        loadTemplates(),
+      ]);
+      markSynced();
+    } catch (e) {
+      console.error('Sync failed:', e);
+    }
+    syncing = false;
+  }
+
+  function formatSyncTime(date: Date | null): string {
+    if (!date) return 'Never';
+    return date.toLocaleTimeString();
+  }
 </script>
 
 <Modal title="Hub Configuration" {open} on:close={handleClose}>
   <div class="config">
-    <div class="status">
-      <span class="dot" class:connected={$hubConnected}></span>
-      <span>{$hubConnected ? 'Connected' : 'Disconnected'}</span>
+    <div class="status-row">
+      <div class="status">
+        <span class="dot" class:connected={$hubConnected}></span>
+        <span>{$hubConnected ? 'Connected' : 'Disconnected'}</span>
+      </div>
+      <div class="sync-status">
+        <span class="sync-label">Last sync: {formatSyncTime($lastSyncTime)}</span>
+        <Button size="small" on:click={handleSync} disabled={!$hubConnected || syncing}>
+          {syncing ? 'Syncing...' : 'Sync Now'}
+        </Button>
+      </div>
+    </div>
+
+    <div class="presets">
+      <span class="presets-label">Quick Select:</span>
+      <div class="preset-buttons">
+        {#each HUB_PRESETS as preset}
+          <button
+            class="preset-btn"
+            class:active={url === preset.url}
+            on:click={() => selectPreset(preset.url)}
+          >
+            {preset.name}
+          </button>
+        {/each}
+      </div>
     </div>
 
     <div class="field">
@@ -93,13 +143,67 @@
     gap: 16px;
   }
 
+  .status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+  }
+
   .status {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 12px;
+  }
+
+  .sync-status {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .sync-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .presets {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .presets-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .preset-buttons {
+    display: flex;
+    gap: 8px;
+  }
+
+  .preset-btn {
+    padding: 6px 12px;
     background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .preset-btn:hover {
+    background: var(--bg-tertiary);
+  }
+
+  .preset-btn.active {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: white;
   }
 
   .dot {

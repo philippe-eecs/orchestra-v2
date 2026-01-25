@@ -64,3 +64,36 @@ def test_delete_task(client):
 
     response = client.get(f"/tasks/{task['id']}")
     assert response.status_code == 404
+
+
+def test_create_task_with_mismatched_project_and_node(client):
+    project_a = client.post("/projects", json={"name": "Project A"}).json()
+    project_b = client.post("/projects", json={"name": "Project B"}).json()
+    node = client.post(f"/projects/{project_a['id']}/nodes", json={"title": "Node A"}).json()
+
+    response = client.post("/tasks", json={
+        "title": "Mismatched Task",
+        "project_id": project_b["id"],
+        "node_id": node["id"],
+    })
+    assert response.status_code == 400
+    assert "node does not belong to project" in response.json()["detail"].lower()
+
+
+def test_update_task_rejects_mismatched_node_project(client):
+    project_a = client.post("/projects", json={"name": "Project A"}).json()
+    project_b = client.post("/projects", json={"name": "Project B"}).json()
+    node_a = client.post(f"/projects/{project_a['id']}/nodes", json={"title": "Node A"}).json()
+    node_b = client.post(f"/projects/{project_b['id']}/nodes", json={"title": "Node B"}).json()
+
+    task = client.post("/tasks", json={
+        "title": "Task",
+        "project_id": project_a["id"],
+        "node_id": node_a["id"],
+    }).json()
+
+    response = client.patch(f"/tasks/{task['id']}", json={
+        "node_id": node_b["id"],
+    })
+    assert response.status_code == 400
+    assert "node does not belong to project" in response.json()["detail"].lower()
