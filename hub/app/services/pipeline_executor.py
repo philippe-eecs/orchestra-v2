@@ -459,19 +459,66 @@ class PipelineExecutor:
         return critic_results
 
     async def _invoke_agent(self, agent_type: AgentType, prompt: str) -> str:
-        """Invoke an AI agent with the given prompt."""
-        # This is a placeholder - actual implementation would call the CLI tools
-        # For now, we'll simulate the agent response
+        """Invoke an AI agent with the given prompt using CLI tools."""
+        import subprocess
+        import tempfile
+        import os
 
-        logger.info(f"Invoking {agent_type} agent...")
+        logger.info(f"Invoking {agent_type} agent with prompt length {len(prompt)}...")
 
-        # In production, this would call:
-        # - claude -p "prompt" for Claude
-        # - codex exec "prompt" for Codex
-        # - gemini "prompt" for Gemini
+        # Write prompt to temp file to avoid shell escaping issues
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write(prompt)
+            prompt_file = f.name
 
-        # Placeholder response
-        return f"[{agent_type}] Agent response for prompt (length={len(prompt)})"
+        try:
+            if agent_type == AgentType.CLAUDE:
+                # Use claude CLI
+                cmd = ['claude', '-p', prompt, '--no-input']
+            elif agent_type == AgentType.CODEX:
+                # Use codex CLI
+                cmd = ['codex', 'exec', prompt]
+            elif agent_type == AgentType.GEMINI:
+                # Use gemini CLI with text output
+                cmd = ['gemini', prompt, '-m', 'gemini-2.5-pro', '-o', 'text']
+            else:
+                raise ValueError(f"Unknown agent type: {agent_type}")
+
+            logger.info(f"Running command: {cmd[0]} ...")
+
+            # Run the command
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout
+                env={**os.environ, 'NO_COLOR': '1'}  # Disable color codes
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Agent {agent_type} failed: {result.stderr}")
+                # Return stderr as output so we can see the error
+                return f"Error from {agent_type}: {result.stderr or result.stdout}"
+
+            output = result.stdout.strip()
+            logger.info(f"Agent {agent_type} returned {len(output)} chars")
+            return output
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Agent {agent_type} timed out")
+            return f"Error: {agent_type} agent timed out after 5 minutes"
+        except FileNotFoundError as e:
+            logger.error(f"Agent CLI not found: {e}")
+            return f"Error: {agent_type} CLI tool not found. Is it installed?"
+        except Exception as e:
+            logger.error(f"Agent {agent_type} error: {e}")
+            return f"Error invoking {agent_type}: {str(e)}"
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(prompt_file)
+            except:
+                pass
 
     def _resolve_template(self, template: str, context: PipelineContext) -> str:
         """Resolve template variables."""
