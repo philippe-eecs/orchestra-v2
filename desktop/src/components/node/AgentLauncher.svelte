@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import type { Node, AgentTemplate, LaunchPreview, ExecutionWithStepRuns } from '../../lib/types';
+  import { api } from '../../lib/api';
   import { createRun, runs } from '../../stores/runs';
+  import { selectedProjectId } from '../../stores/projects';
   import {
     templates,
     loadTemplates,
@@ -20,9 +23,13 @@
   export let node: Node;
 
   let launching = false;
+  let launchingPipeline = false;
   let error: string | null = null;
   let selectedTemplateId: number | null = null;
   let createWorktree = false;
+
+  // Launch mode: 'pipeline' (recommended) or 'template' (custom)
+  let launchMode: 'pipeline' | 'template' = 'pipeline';
 
   // Preview state
   let showPreview = false;
@@ -33,10 +40,29 @@
   $: nodeExecutions = getExecutionsForNode(node.id).slice(0, 5);
   $: nodeRuns = $runs.filter(r => r.node_id === node.id).slice(0, 5);
 
+  // Check if node is in a state that allows launching
+  $: canLaunch = node.status !== 'in_progress' && node.status !== 'needs_review';
+
   onMount(() => {
     loadTemplates();
     loadExecutions(node.id);
   });
+
+  async function launchPipeline() {
+    const projectId = get(selectedProjectId);
+    if (!projectId) return;
+
+    launchingPipeline = true;
+    error = null;
+
+    try {
+      await api.launchPipeline(projectId, node.id);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to launch pipeline';
+    } finally {
+      launchingPipeline = false;
+    }
+  }
 
   function buildPrompt(): string {
     let prompt = '';
@@ -129,60 +155,149 @@
 </script>
 
 <div class="launcher">
-  <!-- Template-based Launch -->
-  <div class="template-launcher">
-    <h5>Launch Template</h5>
-
-    <div class="form-group">
-      <select
-        bind:value={selectedTemplateId}
-        class="select"
-        disabled={launching}
-      >
-        <option value={null}>Select a template...</option>
-        {#each $templates as template}
-          <option value={template.id}>{template.name}</option>
-        {/each}
-      </select>
-    </div>
-
-    <label class="checkbox-label">
-      <input
-        type="checkbox"
-        bind:checked={createWorktree}
-        disabled={launching}
-      />
-      Create git worktree (isolated branch)
-    </label>
-
-    <div class="button-group">
-      <Button
-        variant="secondary"
-        size="small"
-        on:click={handlePreview}
-        disabled={!selectedTemplateId || loadingPreview || launching}
-      >
-        {loadingPreview ? 'Loading...' : 'Preview'}
-      </Button>
-      <Button
-        variant="primary"
-        size="small"
-        on:click={handleQuickLaunch}
-        disabled={!selectedTemplateId || launching}
-      >
-        {launching ? 'Launching...' : 'Launch'}
-      </Button>
-    </div>
+  <!-- Launch Mode Tabs -->
+  <div class="mode-tabs">
+    <button
+      class="mode-tab"
+      class:active={launchMode === 'pipeline'}
+      on:click={() => launchMode = 'pipeline'}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M12 6v6l4 2"/>
+      </svg>
+      Multi-Agent Pipeline
+    </button>
+    <button
+      class="mode-tab"
+      class:active={launchMode === 'template'}
+      on:click={() => launchMode = 'template'}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </svg>
+      Custom Template
+    </button>
   </div>
 
-  <!-- Simple Agent Launch (existing behavior) -->
-  {#if node.agent_type}
-    <div class="simple-launcher">
-      <h5>Quick Run</h5>
-      <Button variant="secondary" on:click={launchAgent} disabled={launching}>
-        {launching ? 'Launching...' : `Run ${node.agent_type}`}
+  <!-- Multi-Agent Pipeline (Recommended) -->
+  {#if launchMode === 'pipeline'}
+    <div class="pipeline-launcher">
+      <div class="pipeline-info">
+        <div class="pipeline-flow">
+          <span class="flow-step">
+            <span class="flow-icon ideation">1</span>
+            <span class="flow-label">Ideate</span>
+          </span>
+          <span class="flow-arrow">→</span>
+          <span class="flow-step">
+            <span class="flow-icon synthesis">2</span>
+            <span class="flow-label">Synthesize</span>
+          </span>
+          <span class="flow-arrow">→</span>
+          <span class="flow-step">
+            <span class="flow-icon review">3</span>
+            <span class="flow-label">Review</span>
+          </span>
+          <span class="flow-arrow">→</span>
+          <span class="flow-step">
+            <span class="flow-icon implement">4</span>
+            <span class="flow-label">Implement</span>
+          </span>
+          <span class="flow-arrow">→</span>
+          <span class="flow-step">
+            <span class="flow-icon critic">5</span>
+            <span class="flow-label">Critics</span>
+          </span>
+        </div>
+        <p class="pipeline-desc">
+          All three AI agents (Claude, Codex, Gemini) collaborate in parallel.
+          You'll review the synthesized plan before implementation.
+        </p>
+      </div>
+
+      {#if !canLaunch}
+        <div class="status-warning">
+          {#if node.status === 'needs_review'}
+            <span class="warning-icon">⏳</span>
+            Node is awaiting your review. Check the feedback panel above.
+          {:else if node.status === 'in_progress'}
+            <span class="warning-icon">⏳</span>
+            Execution in progress...
+          {/if}
+        </div>
+      {/if}
+
+      <Button
+        variant="primary"
+        on:click={launchPipeline}
+        disabled={!canLaunch || launchingPipeline}
+      >
+        {#if launchingPipeline}
+          Starting Pipeline...
+        {:else}
+          Launch Multi-Agent Pipeline
+        {/if}
       </Button>
     </div>
+  {/if}
+
+  <!-- Template-based Launch -->
+  {#if launchMode === 'template'}
+    <div class="template-launcher">
+      <div class="form-group">
+        <label for="template-select">Template</label>
+        <select
+          id="template-select"
+          bind:value={selectedTemplateId}
+          class="select"
+          disabled={launching}
+        >
+          <option value={null}>Select a template...</option>
+          {#each $templates as template}
+            <option value={template.id}>{template.name}</option>
+          {/each}
+        </select>
+      </div>
+
+      <label class="checkbox-label">
+        <input
+          type="checkbox"
+          bind:checked={createWorktree}
+          disabled={launching}
+        />
+        Create git worktree (isolated branch)
+      </label>
+
+      <div class="button-group">
+        <Button
+          variant="secondary"
+          size="small"
+          on:click={handlePreview}
+          disabled={!selectedTemplateId || loadingPreview || launching}
+        >
+          {loadingPreview ? 'Loading...' : 'Preview'}
+        </Button>
+        <Button
+          variant="primary"
+          size="small"
+          on:click={handleQuickLaunch}
+          disabled={!selectedTemplateId || launching}
+        >
+          {launching ? 'Launching...' : 'Launch'}
+        </Button>
+      </div>
+    </div>
+
+    <!-- Simple Agent Launch (existing behavior) -->
+    {#if node.agent_type}
+      <div class="simple-launcher">
+        <h5>Quick Run</h5>
+        <Button variant="secondary" on:click={launchAgent} disabled={launching}>
+          {launching ? 'Launching...' : `Run ${node.agent_type}`}
+        </Button>
+      </div>
+    {/if}
   {/if}
 
   {#if error}
@@ -278,6 +393,129 @@
     text-transform: uppercase;
   }
 
+  /* Mode Tabs */
+  .mode-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--bg-primary);
+    padding: 4px;
+    border-radius: 8px;
+  }
+
+  .mode-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .mode-tab:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+
+  .mode-tab.active {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: white;
+  }
+
+  .mode-tab svg {
+    flex-shrink: 0;
+  }
+
+  /* Pipeline Launcher */
+  .pipeline-launcher {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .pipeline-info {
+    background: var(--bg-primary);
+    border-radius: 8px;
+    padding: 16px;
+  }
+
+  .pipeline-flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+
+  .flow-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .flow-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: white;
+  }
+
+  .flow-icon.ideation { background: #3b82f6; }
+  .flow-icon.synthesis { background: #8b5cf6; }
+  .flow-icon.review { background: #ef4444; }
+  .flow-icon.implement { background: #22c55e; }
+  .flow-icon.critic { background: #f59e0b; }
+
+  .flow-label {
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+  }
+
+  .flow-arrow {
+    color: var(--text-secondary);
+    font-size: 14px;
+    margin-top: -16px;
+  }
+
+  .pipeline-desc {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  .status-warning {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--accent-warning) 15%, transparent);
+    border: 1px solid var(--accent-warning);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--accent-warning);
+  }
+
+  .warning-icon {
+    font-size: 16px;
+  }
+
   .template-launcher,
   .simple-launcher {
     padding-bottom: 12px;
@@ -286,6 +524,14 @@
 
   .form-group {
     margin-bottom: 12px;
+  }
+
+  .form-group label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    margin-bottom: 4px;
   }
 
   .select {

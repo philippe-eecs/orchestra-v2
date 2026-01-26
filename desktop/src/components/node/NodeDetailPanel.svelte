@@ -1,10 +1,13 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import type { Node, NodeUpdate, NodeStatus, AgentType, AgentTemplate } from '../../lib/types';
+  import type { Node, NodeUpdate, NodeStatus, AgentType, AgentTemplate, SynthesisQuestions, FeedbackSubmission } from '../../lib/types';
   import { updateNode, deleteNode } from '../../stores/graph';
   import { templates, loadTemplates } from '../../stores/agentTemplates';
   import { launch, previewLaunch } from '../../stores/executions';
+  import { selectedProjectId } from '../../stores/projects';
+  import { api } from '../../lib/api';
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import Button from '../shared/Button.svelte';
   import StatusBadge from '../shared/StatusBadge.svelte';
   import ResourceEditor from './ResourceEditor.svelte';
@@ -32,11 +35,87 @@
   let saving = false;
   let error: string | null = null;
 
+  // Feedback state
+  let synthesis: SynthesisQuestions | null = null;
+  let feedbackAnswers: Record<string, string> = {};
+  let feedbackNotes = '';
+  let submittingFeedback = false;
+  let feedbackError: string | null = null;
+
+  // Pipeline launch state
+  let launchingPipeline = false;
+
   // Computed: use prompt if available, otherwise description
   $: displayInstructions = node.prompt || node.description || '';
 
-  const statusOptions: NodeStatus[] = ['pending', 'in_progress', 'completed', 'blocked', 'failed'];
+  const statusOptions: NodeStatus[] = ['pending', 'in_progress', 'needs_review', 'completed', 'blocked', 'failed'];
   const agentOptions: AgentType[] = ['claude', 'codex', 'gemini', 'custom'];
+
+  // Load synthesis questions when node needs review
+  $: if (node.status === 'needs_review') {
+    loadSynthesisQuestions();
+  } else {
+    synthesis = null;
+    feedbackAnswers = {};
+    feedbackNotes = '';
+  }
+
+  async function loadSynthesisQuestions() {
+    const projectId = get(selectedProjectId);
+    if (!projectId) return;
+
+    try {
+      synthesis = await api.getSynthesisQuestions(projectId, node.id);
+      // Initialize answers for each question
+      feedbackAnswers = {};
+      synthesis.questions.forEach((_, index) => {
+        feedbackAnswers[String(index)] = '';
+      });
+    } catch (e) {
+      console.error('Failed to load synthesis questions:', e);
+    }
+  }
+
+  async function submitFeedback(approved: boolean) {
+    const projectId = get(selectedProjectId);
+    if (!projectId) return;
+
+    submittingFeedback = true;
+    feedbackError = null;
+
+    try {
+      const feedback: FeedbackSubmission = {
+        answers: feedbackAnswers,
+        notes: feedbackNotes || undefined,
+        approved,
+      };
+
+      await api.submitFeedback(projectId, node.id, feedback);
+      synthesis = null;
+      feedbackAnswers = {};
+      feedbackNotes = '';
+    } catch (e) {
+      feedbackError = e instanceof Error ? e.message : 'Failed to submit feedback';
+    } finally {
+      submittingFeedback = false;
+    }
+  }
+
+  async function launchPipeline() {
+    const projectId = get(selectedProjectId);
+    if (!projectId) return;
+
+    launchingPipeline = true;
+    error = null;
+
+    try {
+      await api.launchPipeline(projectId, node.id);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to launch pipeline';
+    } finally {
+      launchingPipeline = false;
+    }
+  }
 
   $: {
     // Reset form when node changes
@@ -178,8 +257,20 @@
       <div class="header">
         <h3>{node.title}</h3>
         <div class="header-actions">
-          <button class="launch-btn" on:click={openLaunchModal} title="Launch agent">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <button
+            class="pipeline-btn"
+            on:click={launchPipeline}
+            disabled={launchingPipeline || node.status === 'in_progress' || node.status === 'needs_review'}
+            title="Launch multi-agent pipeline (Ideate → Synthesize → Implement → Review)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 6v6l4 2"/>
+            </svg>
+            {launchingPipeline ? 'Starting...' : 'Pipeline'}
+          </button>
+          <button class="launch-btn" on:click={openLaunchModal} title="Launch single agent">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="5 3 19 12 5 21 5 3"/>
             </svg>
             Launch
@@ -226,7 +317,85 @@
         <ResourceEditor nodeId={node.id} resources={node.metadata.resources} />
       </div>
 
-      {#if node.agent_type}
+      {#if node.status === 'needs_review' && synthesis}
+        <div class="section feedback-section">
+          <h4 class="review-header">
+            <span class="pulse-dot"></span>
+            Human Review Required
+          </h4>
+
+          {#if synthesis.agreements.length > 0}
+            <div class="synthesis-block">
+              <span class="label">Agreements:</span>
+              <ul class="synthesis-list">
+                {#each synthesis.agreements as agreement}
+                  <li>{agreement}</li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+
+          {#if synthesis.conflicts.length > 0}
+            <div class="synthesis-block conflicts">
+              <span class="label">Conflicts:</span>
+              <ul class="synthesis-list">
+                {#each synthesis.conflicts as conflict}
+                  <li>{conflict}</li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+
+          {#if synthesis.final_plan}
+            <div class="synthesis-block">
+              <span class="label">Proposed Plan:</span>
+              <pre class="plan-preview">{synthesis.final_plan}</pre>
+            </div>
+          {/if}
+
+          {#if synthesis.questions.length > 0}
+            <div class="questions-section">
+              <span class="label">Questions for you:</span>
+              {#each synthesis.questions as question, index}
+                <div class="question-field">
+                  <label for="q-{index}">{index + 1}. {question}</label>
+                  <textarea
+                    id="q-{index}"
+                    bind:value={feedbackAnswers[String(index)]}
+                    rows="2"
+                    placeholder="Your answer..."
+                  ></textarea>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          <div class="feedback-notes">
+            <label for="feedback-notes">Additional Notes (optional):</label>
+            <textarea
+              id="feedback-notes"
+              bind:value={feedbackNotes}
+              rows="3"
+              placeholder="Any additional context or instructions..."
+            ></textarea>
+          </div>
+
+          {#if feedbackError}
+            <div class="error">{feedbackError}</div>
+          {/if}
+
+          <div class="feedback-actions">
+            <Button variant="danger" on:click={() => submitFeedback(false)} disabled={submittingFeedback}>
+              Reject Plan
+            </Button>
+            <Button variant="primary" on:click={() => submitFeedback(true)} disabled={submittingFeedback}>
+              {submittingFeedback ? 'Submitting...' : 'Approve & Continue'}
+            </Button>
+          </div>
+        </div>
+      {/if}
+
+      {#if node.agent_type && node.status !== 'needs_review'}
         <div class="section">
           <h4>Run Agent</h4>
           <AgentLauncher {node} />
@@ -364,11 +533,11 @@
     gap: 8px;
   }
 
-  .launch-btn {
+  .launch-btn,
+  .pipeline-btn {
     display: flex;
     align-items: center;
     gap: 6px;
-    background: var(--accent-primary);
     color: white;
     border: none;
     padding: 6px 12px;
@@ -378,11 +547,27 @@
     font-weight: 500;
   }
 
-  .launch-btn:hover {
+  .launch-btn {
+    background: var(--accent-primary);
+  }
+
+  .pipeline-btn {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  }
+
+  .launch-btn:hover,
+  .pipeline-btn:hover {
     opacity: 0.9;
   }
 
-  .launch-btn svg {
+  .launch-btn:disabled,
+  .pipeline-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .launch-btn svg,
+  .pipeline-btn svg {
     width: 14px;
     height: 14px;
   }
@@ -525,5 +710,109 @@
 
   .checkbox-label input {
     margin: 0;
+  }
+
+  /* Feedback / Human Review Section */
+  .feedback-section {
+    background: color-mix(in srgb, var(--accent-error) 10%, transparent);
+    border: 1px solid var(--accent-error);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 16px;
+  }
+
+  .review-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--accent-error);
+    margin: 0 0 16px;
+  }
+
+  .pulse-dot {
+    width: 10px;
+    height: 10px;
+    background: var(--accent-error);
+    border-radius: 50%;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.2); }
+  }
+
+  .synthesis-block {
+    margin-bottom: 16px;
+  }
+
+  .synthesis-block.conflicts {
+    background: color-mix(in srgb, var(--accent-warning) 10%, transparent);
+    border-left: 3px solid var(--accent-warning);
+    padding: 8px 12px;
+    border-radius: 4px;
+  }
+
+  .synthesis-list {
+    margin: 8px 0 0 20px;
+    padding: 0;
+  }
+
+  .synthesis-list li {
+    margin-bottom: 4px;
+    font-size: 13px;
+  }
+
+  .plan-preview {
+    background: var(--bg-primary);
+    padding: 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    max-height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin-top: 8px;
+  }
+
+  .questions-section {
+    margin-bottom: 16px;
+  }
+
+  .question-field {
+    margin-top: 12px;
+  }
+
+  .question-field label {
+    display: block;
+    font-size: 13px;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    font-weight: 500;
+  }
+
+  .question-field textarea {
+    width: 100%;
+    resize: vertical;
+  }
+
+  .feedback-notes {
+    margin-bottom: 16px;
+  }
+
+  .feedback-notes label {
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .feedback-notes textarea {
+    width: 100%;
+    resize: vertical;
+  }
+
+  .feedback-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
   }
 </style>

@@ -1,15 +1,19 @@
 import re
 import logging
 import httpx
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from app.config import settings
 from app.db.database import get_db
 from app.db.models import ProjectModel, NodeModel, AgentTemplateModel
 from app.models import LaunchPreview, LaunchRequest, ExecutionWithStepRuns
+from app.models.pipeline import DEFAULT_PIPELINE, PipelineExecution
 from app.routers.executions import execution_to_response_with_steps, ExecutionModel, StepRunModel
 from app.services.broadcast import manager
+from app.services.pipeline_executor import PipelineExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -273,3 +277,80 @@ async def launch_execution(
     )
 
     return execution_to_response_with_steps(db_execution)
+
+
+class PipelineLaunchRequest(BaseModel):
+    """Request to launch a multi-agent pipeline execution."""
+    use_default_pipeline: bool = True
+    custom_pipeline_id: Optional[int] = None
+
+
+class PipelineLaunchResponse(BaseModel):
+    """Response from launching a pipeline."""
+    execution_id: int
+    node_id: int
+    status: str
+    message: str
+
+
+@router.post("/launch-pipeline", response_model=PipelineLaunchResponse, status_code=201)
+async def launch_pipeline_execution(
+    project_id: int,
+    node_id: int,
+    request: PipelineLaunchRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Launch a multi-agent pipeline execution for a node.
+
+    This starts the full pipeline:
+    1. Ideation - All agents create plans in parallel
+    2. Synthesis - Claude merges plans and generates questions
+    3. Human Review - Waits for human feedback (node turns red)
+    4. Implementation - Codex executes the approved plan
+    5. Critics - Multiple critics vote YES/NO
+    6. Loop until approval or max retries
+    """
+    # Validate project
+    project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Validate node
+    node = db.query(NodeModel).filter(
+        NodeModel.id == node_id,
+        NodeModel.project_id == project_id
+    ).first()
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    # Use default pipeline for now
+    pipeline = DEFAULT_PIPELINE
+
+    # Update node status to in_progress
+    node.status = "in_progress"
+    db.commit()
+
+    # Broadcast status update
+    await manager.broadcast(project_id, "node.updated", {
+        "id": node_id,
+        "status": "in_progress",
+    })
+
+    # Run pipeline in background
+    async def run_pipeline():
+        executor = PipelineExecutor(db, project_id)
+        try:
+            await executor.execute_node(node_id, pipeline)
+        except Exception as e:
+            logger.error(f"Pipeline execution failed: {e}")
+            # Status updates are handled in the executor
+
+    background_tasks.add_task(run_pipeline)
+
+    return PipelineLaunchResponse(
+        execution_id=0,  # Will be created by executor
+        node_id=node_id,
+        status="started",
+        message=f"Multi-agent pipeline '{pipeline.name}' started for node '{node.title}'"
+    )

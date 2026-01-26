@@ -15,6 +15,7 @@
   let isDragging = false;
   let dragStart = { x: 0, y: 0 };
   let dragNode: number | null = null;
+  let animationFrame: number | null = null;
 
   const NODE_WIDTH = 180;
   const NODE_HEIGHT = 60;
@@ -28,6 +29,22 @@
 
   $: if (canvas && ctx && $nodes) {
     draw();
+    // Start animation loop if any nodes need review
+    startAnimationIfNeeded();
+  }
+
+  function startAnimationIfNeeded() {
+    const hasNeedsReview = $nodes.some(n => n.status === 'needs_review');
+    if (hasNeedsReview && !animationFrame) {
+      const animate = () => {
+        draw();
+        animationFrame = requestAnimationFrame(animate);
+      };
+      animationFrame = requestAnimationFrame(animate);
+    } else if (!hasNeedsReview && animationFrame) {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    }
   }
 
   onMount(() => {
@@ -36,6 +53,9 @@
 
   onDestroy(() => {
     window.removeEventListener('resize', resizeCanvas);
+    if (animationFrame) {
+      cancelAnimationFrame(animationFrame);
+    }
   });
 
   function resizeCanvas() {
@@ -99,12 +119,24 @@
       // Status indicator
       const statusColors: Record<string, string> = {
         pending: '#a0a0a0',
-        in_progress: '#00d9ff',
+        in_progress: '#ffaa00',
+        needs_review: '#ff4444',  // RED - human attention needed
         completed: '#00ff88',
         blocked: '#ffaa00',
         failed: '#ff4444',
       };
       ctx.fillStyle = statusColors[node.status] || '#a0a0a0';
+
+      // Draw pulsing glow for needs_review status
+      if (node.status === 'needs_review') {
+        ctx.save();
+        ctx.shadowColor = '#ff4444';
+        ctx.shadowBlur = 8 + Math.sin(Date.now() / 200) * 4;  // Pulsing effect
+        ctx.beginPath();
+        ctx.arc(node.position_x + 12, node.position_y + 12, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
       ctx.beginPath();
       ctx.arc(node.position_x + 12, node.position_y + 12, 4, 0, Math.PI * 2);
       ctx.fill();

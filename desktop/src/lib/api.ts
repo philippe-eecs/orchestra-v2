@@ -12,6 +12,8 @@ import type {
   Execution, ExecutionCreate, ExecutionUpdate, ExecutionWithStepRuns,
   StepRun, StepRunUpdate,
   LaunchPreview, LaunchRequest,
+  SynthesisQuestions, FeedbackSubmission, FeedbackResponse,
+  PipelineLaunchRequest, PipelineLaunchResponse,
 } from './types';
 
 class ApiClient {
@@ -245,6 +247,32 @@ class ApiClient {
 
   async launch(projectId: number, nodeId: number, request: LaunchRequest): Promise<ExecutionWithStepRuns> {
     return this.request<ExecutionWithStepRuns>('POST', `/projects/${projectId}/nodes/${nodeId}/launch`, request);
+  }
+
+  // Feedback (Human Review)
+  async getSynthesisQuestions(projectId: number, nodeId: number): Promise<SynthesisQuestions> {
+    return this.request<SynthesisQuestions>('GET', `/projects/${projectId}/nodes/${nodeId}/synthesis`);
+  }
+
+  async submitFeedback(projectId: number, nodeId: number, feedback: FeedbackSubmission): Promise<FeedbackResponse> {
+    return this.request<FeedbackResponse>('POST', `/projects/${projectId}/nodes/${nodeId}/feedback`, feedback);
+  }
+
+  async getNodesNeedingReview(projectId: number): Promise<SynthesisQuestions[]> {
+    return this.request<SynthesisQuestions[]>('GET', `/projects/${projectId}/nodes/needs-review`);
+  }
+
+  // Pipeline Launch
+  async launchPipeline(
+    projectId: number,
+    nodeId: number,
+    request: PipelineLaunchRequest = { use_default_pipeline: true }
+  ): Promise<PipelineLaunchResponse> {
+    return this.request<PipelineLaunchResponse>(
+      'POST',
+      `/projects/${projectId}/nodes/${nodeId}/launch-pipeline`,
+      request
+    );
   }
 }
 

@@ -4,6 +4,7 @@ from enum import Enum
 class NodeStatus(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    NEEDS_REVIEW = "needs_review"  # Human attention required (red signal)
     COMPLETED = "completed"
     BLOCKED = "blocked"
     FAILED = "failed"

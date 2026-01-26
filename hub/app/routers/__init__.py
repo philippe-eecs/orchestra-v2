@@ -7,6 +7,7 @@ from .ws import router as ws_router
 from .agent_templates import router as agent_templates_router
 from .executions import router as executions_router
 from .launch import router as launch_router
+from .feedback import router as feedback_router
 
 __all__ = [
     "projects_router",
@@ -18,4 +19,5 @@ __all__ = [
     "agent_templates_router",
     "executions_router",
     "launch_router",
+    "feedback_router",
 ]

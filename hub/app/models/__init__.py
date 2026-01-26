@@ -12,6 +12,12 @@ from .execution import (
     StepRun, StepRunCreate, StepRunUpdate,
     LaunchPreview, LaunchRequest,
 )
+from .pipeline import (
+    PipelinePhase, PipelineStep, MultiAgentPipeline,
+    CriticVote, CriticSeverity, CriticResult,
+    HumanFeedback, IdeationResult, SynthesisResult, ImplementationResult,
+    PipelineContext, PipelineExecution, DEFAULT_PIPELINE,
+)
 
 __all__ = [
     "NodeStatus", "AgentType", "RunStatus", "ExecutionStatus", "StepStatus", "OutputFormat",
@@ -24,4 +30,9 @@ __all__ = [
     "Execution", "ExecutionCreate", "ExecutionUpdate", "ExecutionWithStepRuns",
     "StepRun", "StepRunCreate", "StepRunUpdate",
     "LaunchPreview", "LaunchRequest",
+    # Pipeline models
+    "PipelinePhase", "PipelineStep", "MultiAgentPipeline",
+    "CriticVote", "CriticSeverity", "CriticResult",
+    "HumanFeedback", "IdeationResult", "SynthesisResult", "ImplementationResult",
+    "PipelineContext", "PipelineExecution", "DEFAULT_PIPELINE",
 ]

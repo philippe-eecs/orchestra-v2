@@ -20,7 +20,7 @@
   let saving = false;
   let error: string | null = null;
 
-  const statusOptions: NodeStatus[] = ['pending', 'in_progress', 'completed', 'blocked', 'failed'];
+  const statusOptions: NodeStatus[] = ['pending', 'in_progress', 'needs_review', 'completed', 'blocked', 'failed'];
   const agentOptions: AgentType[] = ['claude', 'codex', 'gemini', 'custom'];
   const kindOptions = ['url', 'file', 'note', 'doc', 'image'];
 

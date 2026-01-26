@@ -39,7 +39,9 @@ export function statusColor(status: string): string {
       return 'var(--accent-success)';
     case 'in_progress':
     case 'running':
-      return 'var(--accent-primary)';
+      return 'var(--accent-warning)';
+    case 'needs_review':
+      return 'var(--accent-error)';  // Red signal - human attention needed
     case 'failed':
       return 'var(--accent-error)';
     case 'blocked':

@@ -1,4 +1,4 @@
-export type NodeStatus = 'pending' | 'in_progress' | 'completed' | 'blocked' | 'failed';
+export type NodeStatus = 'pending' | 'in_progress' | 'needs_review' | 'completed' | 'blocked' | 'failed';
 export type AgentType = 'claude' | 'codex' | 'gemini' | 'custom';
 export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -304,4 +304,51 @@ export interface TerminalMessage {
   tmux_session?: string;
   timestamp?: string;
   message?: string;  // For info messages
+}
+
+// Pipeline Types
+export type PipelinePhase = 'ideation' | 'synthesis' | 'implement' | 'critic';
+
+export interface SynthesisQuestions {
+  node_id: number;
+  node_title: string;
+  execution_id?: number;
+  status: string;
+  agreements: string[];
+  conflicts: string[];
+  questions: string[];
+  final_plan: string;
+}
+
+export interface FeedbackSubmission {
+  answers: Record<string, string>;
+  notes?: string;
+  approved: boolean;
+}
+
+export interface FeedbackResponse {
+  status: string;
+  message: string;
+  node_id: number;
+  execution_id?: number;
+}
+
+export interface CriticResult {
+  agent_type: AgentType;
+  vote: 'YES' | 'NO';
+  severity?: 'minor' | 'major';
+  reasoning: string;
+  feedback?: string;
+}
+
+export interface PipelineLaunchRequest {
+  use_default_pipeline?: boolean;
+  custom_pipeline_id?: number;
+}
+
+export interface PipelineLaunchResponse {
+  execution_id: number;
+  node_id: number;
+  status: string;
+  message: string;
 }
