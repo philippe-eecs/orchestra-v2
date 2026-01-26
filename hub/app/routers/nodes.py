@@ -12,10 +12,15 @@ router = APIRouter(prefix="/projects/{project_id}", tags=["nodes"])
 
 def node_to_response(node: NodeModel) -> Node:
     """Convert NodeModel to Node response with parent_ids."""
+    import json
     # Parse expected_deliverables from JSON
     expected_deliverables = []
     if node.expected_deliverables:
-        for d in node.expected_deliverables:
+        # Handle both string and list formats
+        deliverables_data = node.expected_deliverables
+        if isinstance(deliverables_data, str):
+            deliverables_data = json.loads(deliverables_data)
+        for d in deliverables_data:
             if isinstance(d, dict):
                 expected_deliverables.append(DeliverableSchema(**d))
             else:
