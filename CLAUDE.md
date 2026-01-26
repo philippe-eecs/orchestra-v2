@@ -50,27 +50,31 @@ ssh -L 8000:localhost:8000 -L 8001:localhost:8001 root@159.65.109.198
 # Open browser to http://localhost:8000
 ```
 
-## Development Workflow
+## Deployment
 
-### Frontend Changes
+The VM runs from a git clone at `/root/orchestra-repo`. Use the deploy script for automated deployment:
+
 ```bash
-# Build
-cd desktop && npm run build
-
-# Deploy
-scp -r dist root@159.65.109.198:/root/hub/
-
-# Restart hub
-ssh root@159.65.109.198 "pkill -f 'uvicorn app.main' || true"
-ssh root@159.65.109.198 "cd /root/hub && nohup venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > /root/hub.log 2>&1 &"
+# One-command deployment (builds, commits, pushes, pulls on VM, restarts)
+./scripts/deploy.sh
 ```
 
-### Hub Changes
+### Manual Deployment Steps
 ```bash
-# Copy updated files
-scp hub/app/*.py root@159.65.109.198:/root/hub/app/
+# 1. Build frontend
+cd desktop && npm run build
 
-# Restart (same command as above)
+# 2. Commit and push changes
+git add -A && git commit -m "Your changes" && git push origin main
+
+# 3. Pull on VM
+ssh root@159.65.109.198 "cd /root/orchestra-repo && git pull origin main"
+
+# 4. Copy built frontend (dist/ is gitignored)
+scp -r desktop/dist root@159.65.109.198:/root/orchestra-repo/hub/
+
+# 5. Restart hub
+ssh root@159.65.109.198 "pkill -f uvicorn; cd /root/orchestra-repo/hub && nohup venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > /root/hub.log 2>&1 &"
 ```
 
 ### Local Vite Dev (optional)
@@ -101,11 +105,14 @@ Environment variables (prefix: `ORCHESTRA_`):
 ### VM Admin
 ```bash
 ssh root@159.65.109.198
-cd /root/hub
+cd /root/orchestra-repo/hub
 source venv/bin/activate
 
 # View logs
 tail -f /root/hub.log
+
+# Pull latest changes
+git pull origin main
 
 # Restart hub
 pkill -f 'uvicorn app.main'
@@ -120,10 +127,31 @@ nohup venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > /root/hub.log 2
 | `/health` | GET | Health check |
 | `/projects` | GET/POST | List/create projects |
 | `/projects/{id}/nodes` | GET/POST | List/create nodes |
+| `/projects/{id}/nodes/{id}/launch-pipeline` | POST | Launch multi-agent pipeline |
+| `/projects/{id}/nodes/{id}/synthesis` | GET | Get synthesis questions for review |
+| `/projects/{id}/nodes/{id}/feedback` | POST | Submit human feedback |
+| `/projects/{id}/nodes/needs-review` | GET | List nodes needing review |
 | `/agent-templates` | GET | List agent templates |
-| `/launch` | POST | Launch agent execution |
 | `/executions` | GET | List executions |
 | `/ws/subscribe/{project_id}` | WS | Real-time updates |
+
+## Multi-Agent Pipeline
+
+The pipeline orchestrates multiple AI agents for complex tasks:
+
+1. **Ideation**: Claude, Codex, and Gemini create plans in parallel
+2. **Synthesis**: Claude merges plans and identifies conflicts
+3. **Human Review**: Node turns RED, awaiting your feedback
+4. **Implementation**: Codex executes the approved plan
+5. **Critics**: All agents vote YES/NO on the implementation
+6. **Retry**: If critics reject, loop back with feedback
+
+Node statuses:
+- `pending` (gray) - Not started
+- `in_progress` (yellow) - Currently executing
+- `needs_review` (RED) - Human attention required
+- `completed` (green) - Successfully finished
+- `failed` (red) - Execution failed
 
 ## Testing
 
