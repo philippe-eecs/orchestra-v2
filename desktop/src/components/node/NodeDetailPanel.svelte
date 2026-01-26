@@ -1,12 +1,9 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import type { Node, NodeUpdate, NodeStatus, AgentType, AgentTemplate, SynthesisQuestions, FeedbackSubmission, Deliverable, DeliverableSchema } from '../../lib/types';
+  import type { Node, NodeUpdate, NodeStatus, AgentType, SynthesisQuestions, FeedbackSubmission, Deliverable, DeliverableSchema } from '../../lib/types';
   import { updateNode, deleteNode } from '../../stores/graph';
-  import { templates, loadTemplates } from '../../stores/agentTemplates';
-  import { launch, previewLaunch } from '../../stores/executions';
   import { selectedProjectId } from '../../stores/projects';
   import { api } from '../../lib/api';
-  import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import Button from '../shared/Button.svelte';
   import StatusBadge from '../shared/StatusBadge.svelte';
@@ -21,7 +18,7 @@
 
   let showEditModal = false;
   let showLaunchModal = false;
-  let selectedTemplateId: number | null = null;
+  let selectedAgent: 'claude' | 'codex' | 'gemini' | null = null;
   let createWorktree = false;
   let launching = false;
 
@@ -217,27 +214,33 @@
     error = null;
   }
 
-  onMount(() => {
-    loadTemplates();
-  });
 
   function openLaunchModal() {
+    // Default to node's agent type, or codex for implementation
+    selectedAgent = (node.agent_type as 'claude' | 'codex' | 'gemini') || 'codex';
     showLaunchModal = true;
   }
 
-  async function handleQuickLaunch() {
-    if (!selectedTemplateId) return;
+  async function handleQuickRun() {
+    if (!selectedAgent) return;
+
+    const projectId = get(selectedProjectId);
+    if (!projectId) return;
 
     launching = true;
-    const result = await launch(node.id, {
-      template_id: selectedTemplateId,
-      create_worktree: createWorktree,
-    });
+    error = null;
 
-    launching = false;
-    if (result) {
+    try {
+      // TODO: Implement direct agent run API
+      // For now, use the pipeline with a single agent
+      await api.launchPipeline(projectId, node.id, {
+        use_default_pipeline: true,
+      });
       showLaunchModal = false;
-      selectedTemplateId = null;
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to run agent';
+    } finally {
+      launching = false;
     }
   }
 </script>
@@ -314,11 +317,11 @@
             </svg>
             {launchingPipeline ? 'Starting...' : 'Pipeline'}
           </button>
-          <button class="launch-btn" on:click={openLaunchModal} title="Launch single agent">
+          <button class="launch-btn" on:click={openLaunchModal} title="Run single agent on this node">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="5 3 19 12 5 21 5 3"/>
             </svg>
-            Launch
+            Run
           </button>
           <button class="icon-btn" on:click={() => showEditModal = true} title="Edit fullscreen">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -540,32 +543,55 @@
   </div>
 </Modal>
 
-<Modal title="Launch Agent" open={showLaunchModal} on:close={() => showLaunchModal = false}>
+<Modal title="Run Agent" open={showLaunchModal} on:close={() => showLaunchModal = false}>
   <div class="launch-modal-content">
     <div class="launch-summary">
       <h4>{node.title}</h4>
-      {#if node.context}
-        <div class="launch-field">
-          <span class="field-label">Context:</span>
-          <p class="field-value">{node.context.slice(0, 200)}{node.context.length > 200 ? '...' : ''}</p>
-        </div>
-      {/if}
-      {#if node.prompt}
+      {#if node.prompt || node.description}
         <div class="launch-field">
           <span class="field-label">Instructions:</span>
-          <p class="field-value">{node.prompt.slice(0, 200)}{node.prompt.length > 200 ? '...' : ''}</p>
+          <p class="field-value">{(node.prompt || node.description || '').slice(0, 300)}{(node.prompt || node.description || '').length > 300 ? '...' : ''}</p>
+        </div>
+      {/if}
+      {#if node.expected_deliverables && node.expected_deliverables.length > 0}
+        <div class="launch-field">
+          <span class="field-label">Expected Output:</span>
+          <p class="field-value">{node.expected_deliverables.map(d => d.name).join(', ')}</p>
         </div>
       {/if}
     </div>
 
     <div class="launch-field">
-      <label for="launch-template">Template</label>
-      <select id="launch-template" bind:value={selectedTemplateId}>
-        <option value={null}>Select a template...</option>
-        {#each $templates as template}
-          <option value={template.id}>{template.name}</option>
-        {/each}
-      </select>
+      <span class="field-label">Select Agent:</span>
+      <div class="agent-buttons">
+        <button
+          class="agent-btn claude"
+          class:selected={selectedAgent === 'claude'}
+          on:click={() => selectedAgent = 'claude'}
+        >
+          <span class="agent-icon">🧠</span>
+          Claude
+          <span class="agent-desc">Planning & Synthesis</span>
+        </button>
+        <button
+          class="agent-btn codex"
+          class:selected={selectedAgent === 'codex'}
+          on:click={() => selectedAgent = 'codex'}
+        >
+          <span class="agent-icon">⚡</span>
+          Codex
+          <span class="agent-desc">Code & Implementation</span>
+        </button>
+        <button
+          class="agent-btn gemini"
+          class:selected={selectedAgent === 'gemini'}
+          on:click={() => selectedAgent = 'gemini'}
+        >
+          <span class="agent-icon">🔍</span>
+          Gemini
+          <span class="agent-desc">Research & Analysis</span>
+        </button>
+      </div>
     </div>
 
     <label class="checkbox-label">
@@ -576,8 +602,8 @@
 
   <svelte:fragment slot="footer">
     <Button variant="secondary" on:click={() => showLaunchModal = false}>Cancel</Button>
-    <Button variant="primary" on:click={handleQuickLaunch} disabled={!selectedTemplateId || launching}>
-      {launching ? 'Launching...' : 'Launch'}
+    <Button variant="primary" on:click={handleQuickRun} disabled={!selectedAgent || launching}>
+      {launching ? 'Running...' : `Run with ${selectedAgent || '...'}`}
     </Button>
   </svelte:fragment>
 </Modal>
@@ -1072,5 +1098,67 @@
     white-space: pre-wrap;
     word-break: break-word;
     margin: 0;
+  }
+
+  /* Agent Selection Buttons */
+  .agent-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .agent-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 8px;
+    background: var(--bg-primary);
+    border: 2px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .agent-btn:hover {
+    border-color: var(--text-secondary);
+  }
+
+  .agent-btn.selected {
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  }
+
+  .agent-btn.claude.selected {
+    border-color: #f97316;
+    background: color-mix(in srgb, #f97316 10%, transparent);
+  }
+
+  .agent-btn.codex.selected {
+    border-color: #22c55e;
+    background: color-mix(in srgb, #22c55e 10%, transparent);
+  }
+
+  .agent-btn.gemini.selected {
+    border-color: #3b82f6;
+    background: color-mix(in srgb, #3b82f6 10%, transparent);
+  }
+
+  .agent-icon {
+    font-size: 24px;
+    margin-bottom: 4px;
+  }
+
+  .agent-btn span:not(.agent-icon):not(.agent-desc) {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .agent-desc {
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    text-align: center;
   }
 </style>
