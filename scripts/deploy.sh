@@ -1,22 +1,31 @@
 #!/bin/bash
-# Deploy script for Orchestra V2
+# Deploy script for Orchestra V3
 # Usage: ./scripts/deploy.sh
 
 set -e
 
 VM_HOST="root@159.65.109.198"
-REPO_PATH="/root/orchestra-repo"
-HUB_PATH="$REPO_PATH/hub"
+REPO_PATH="/root/orchestra"
+BACKEND_PATH="$REPO_PATH/backend"
 
-echo "=== Orchestra V2 Deployment ==="
+echo "=== Orchestra V3 Deployment ==="
+
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # 1. Build frontend locally
 echo "Building frontend..."
-cd "$(dirname "$0")/../desktop"
+cd "$ROOT_DIR/frontend"
 npm run build
 
-# 2. Commit and push changes (if any)
-cd "$(dirname "$0")/.."
+# 2. Copy dist to backend
+echo "Copying dist to backend..."
+rm -rf "$ROOT_DIR/backend/dist"
+cp -r dist "$ROOT_DIR/backend/"
+
+# 3. Check for uncommitted changes
+cd "$ROOT_DIR"
 if [[ -n $(git status --porcelain) ]]; then
     echo "Uncommitted changes detected. Please commit first."
     exit 1
@@ -25,29 +34,29 @@ fi
 echo "Pushing to origin..."
 git push origin main
 
-# 3. Pull changes on VM
+# 4. Pull changes on VM
 echo "Pulling changes on VM..."
 ssh $VM_HOST "cd $REPO_PATH && git pull origin main"
 
-# 4. Copy built frontend to VM (not in git)
+# 5. Copy built frontend to VM (dist is gitignored)
 echo "Copying built frontend..."
-scp -r desktop/dist $VM_HOST:$HUB_PATH/
+scp -r "$ROOT_DIR/backend/dist" $VM_HOST:$BACKEND_PATH/
 
-# 5. Restart the hub service
-echo "Restarting hub service..."
-ssh $VM_HOST "pkill -f 'uvicorn app.main' || true"
+# 6. Restart the backend service
+echo "Restarting backend service..."
+ssh $VM_HOST "pkill -f 'uvicorn main:app' || true"
 sleep 1
 
-# Start in background and detach properly
-ssh $VM_HOST "cd $HUB_PATH && nohup venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > /root/hub.log 2>&1 &" &
+# Start in background
+ssh $VM_HOST "cd $BACKEND_PATH && source venv/bin/activate && nohup uvicorn main:app --host 0.0.0.0 --port 8000 > /root/hub.log 2>&1 &" &
 sleep 3
 
-# 6. Verify deployment
+# 7. Verify deployment
 echo "Verifying deployment..."
-HEALTH=$(ssh $VM_HOST "curl -s http://localhost:8000/health")
-echo "Health check: $HEALTH"
+GRAPHS=$(ssh $VM_HOST "curl -s http://localhost:8000/graphs")
+echo "API response: $GRAPHS"
 
-if echo "$HEALTH" | grep -q '"status":"ok"'; then
+if echo "$GRAPHS" | grep -q '\['; then
     echo ""
     echo "=== Deployment successful! ==="
     echo "Access the app at: http://localhost:8000"

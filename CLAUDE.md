@@ -1,17 +1,13 @@
-# Orchestra V2 - Claude Code Instructions
+# Orchestra V3 - Claude Code Instructions
 
 ## Project Overview
 
-Orchestra is a multi-agent orchestration platform for managing software development workflows. It consists of:
-
-- **Frontend** (Svelte): Web UI served from the hub
-- **Hub Service** (FastAPI): Central coordination server running on a remote VM
-- **Agent Swarm**: Claude, Codex, and Gemini CLI tools executing tasks
+Orchestra is a minimal multi-agent DAG runner. Create graphs of AI agents (Claude, Codex, Gemini), connect them, run the DAG.
 
 ## Architecture
 
 ```
-Browser ──SSH Tunnel──> Hub Service (VM) ──> Agent CLIs (VM)
+Browser ──SSH Tunnel──> Backend (VM:8000) ──> CLI Agents (tmux sessions)
                         └── serves UI + API
 ```
 
@@ -21,156 +17,118 @@ Everything runs on the VM. Local machine only needs SSH and a browser.
 
 ```
 claude-command/
-├── desktop/              # Svelte frontend source
-│   ├── src/              # Svelte components
-│   │   ├── components/   # UI components (modals, panels, canvas)
-│   │   ├── stores/       # Svelte stores (hub.ts, projects.ts)
-│   │   └── lib/          # Types and API client
-│   └── dist/             # Built output (scp to VM)
-├── hub/                  # FastAPI hub service
-│   ├── app/              # Main application
-│   │   ├── main.py       # FastAPI app + static file serving
-│   │   ├── config.py     # Settings (env vars: ORCHESTRA_*)
-│   │   ├── routers/      # API endpoints
-│   │   ├── models/       # Pydantic models
-│   │   ├── db/           # SQLAlchemy models and database
-│   │   └── services/     # Business logic
-│   ├── dist/             # Frontend files (on VM only)
-│   └── tests/            # Pytest tests
-└── docs/                 # Documentation
-    └── VM_SETUP.md       # VM provisioning guide
+├── backend/              # FastAPI backend
+│   ├── main.py           # API endpoints (~120 lines)
+│   ├── models.py         # SQLAlchemy models (~80 lines)
+│   ├── database.py       # DB setup (~25 lines)
+│   ├── services/
+│   │   └── runner.py     # DAG execution (~220 lines)
+│   ├── dist/             # Built frontend (for production)
+│   └── requirements.txt
+├── frontend/             # Svelte frontend
+│   ├── src/
+│   │   ├── App.svelte
+│   │   ├── GraphList.svelte
+│   │   ├── GraphEditor.svelte
+│   │   └── RunResults.svelte
+│   └── package.json
+└── scripts/
+    └── deploy.sh
+```
+
+## Data Model (5 tables)
+
+- `graph` - DAG container (name, created_at)
+- `node` - Agent task (title, prompt, agent_type, position)
+- `edge` - Connection (parent_id → child_id)
+- `run` - Execution instance (status, error)
+- `node_run` - Node output (output, artifacts, tmux_session)
+
+## API Endpoints (8 routes)
+
+```
+POST   /graphs                 Create graph
+GET    /graphs                 List graphs
+GET    /graphs/{id}            Get graph with nodes + edges
+DELETE /graphs/{id}            Delete graph
+POST   /graphs/{id}/nodes      Create node
+DELETE /nodes/{id}             Delete node
+POST   /graphs/{id}/edges      Create edge
+POST   /graphs/{id}/run        Run DAG → returns run_id
+GET    /runs/{id}              Get run status + outputs
 ```
 
 ## Usage
 
 ```bash
-# Start SSH tunnel (only thing needed locally)
-ssh -L 8000:localhost:8000 -L 8001:localhost:8001 root@159.65.109.198
+# SSH tunnel (only thing needed locally)
+ssh -L 8000:localhost:8000 root@159.65.109.198
 
 # Open browser to http://localhost:8000
 ```
 
 ## Deployment
 
-The VM runs from a git clone at `/root/orchestra-repo`. Use the deploy script for automated deployment:
-
 ```bash
-# One-command deployment (builds, commits, pushes, pulls on VM, restarts)
+# One-command deploy
 ./scripts/deploy.sh
 ```
 
-### Manual Deployment Steps
+### Manual Steps
 ```bash
 # 1. Build frontend
-cd desktop && npm run build
+cd frontend && npm run build
 
-# 2. Commit and push changes
-git add -A && git commit -m "Your changes" && git push origin main
+# 2. Copy to backend
+cp -r dist ../backend/
 
-# 3. Pull on VM
-ssh root@159.65.109.198 "cd /root/orchestra-repo && git pull origin main"
+# 3. Commit and push
+git add -A && git commit -m "Deploy" && git push
 
-# 4. Copy built frontend (dist/ is gitignored)
-scp -r desktop/dist root@159.65.109.198:/root/orchestra-repo/hub/
-
-# 5. Restart hub
-ssh root@159.65.109.198 "pkill -f uvicorn; cd /root/orchestra-repo/hub && nohup venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > /root/hub.log 2>&1 &"
+# 4. On VM: pull and restart
+ssh root@159.65.109.198 "cd /root/orchestra && git pull && pkill -f uvicorn; cd backend && source venv/bin/activate && nohup uvicorn main:app --host 0.0.0.0 --port 8000 > /root/hub.log 2>&1 &"
 ```
 
-### Local Vite Dev (optional)
-For faster frontend iteration:
+## Local Dev
+
 ```bash
-# Terminal 1: SSH tunnel (for API access)
-ssh -L 8000:localhost:8000 -L 8001:localhost:8001 root@159.65.109.198
+# Terminal 1: SSH tunnel
+ssh -L 8000:localhost:8000 root@159.65.109.198
 
-# Terminal 2: Local Vite
-cd desktop && npm run dev
-# Open http://localhost:5173
+# Terminal 2: Local Vite (optional, for faster frontend iteration)
+cd frontend && npm run dev
+# Opens http://localhost:5173 with API proxy to VM
 ```
 
-### Hub Configuration
+## VM Setup
 
-Environment variables (prefix: `ORCHESTRA_`):
-- `ORCHESTRA_DATABASE_URL`: SQLite path (default: `sqlite:///./orchestra.db`)
-- `ORCHESTRA_CORS_ORIGINS`: Allowed origins
-- `ORCHESTRA_DEBUG`: Enable debug mode
-
-## VM Access
-
-### Security Model
-- **Ports 8000-8009**: Private (SSH tunnel only)
-- **Ports 80/443**: Public (for websites)
-- **Port 22**: SSH key authentication
-
-### VM Admin
 ```bash
 ssh root@159.65.109.198
-cd /root/orchestra-repo/hub
+
+# Clone repo
+git clone https://github.com/philippe-eecs/claude-command.git /root/orchestra
+
+# Setup backend
+cd /root/orchestra/backend
+python3 -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
 
-# View logs
-tail -f /root/hub.log
-
-# Pull latest changes
-git pull origin main
-
-# Restart hub
-pkill -f 'uvicorn app.main'
-nohup venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > /root/hub.log 2>&1 &
+# Start
+nohup uvicorn main:app --host 0.0.0.0 --port 8000 > /root/hub.log 2>&1 &
 ```
 
-## API Endpoints
+## Clickable Links
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Frontend UI |
-| `/health` | GET | Health check |
-| `/projects` | GET/POST | List/create projects |
-| `/projects/{id}/nodes` | GET/POST | List/create nodes |
-| `/projects/{id}/nodes/{id}/launch-pipeline` | POST | Launch multi-agent pipeline |
-| `/projects/{id}/nodes/{id}/synthesis` | GET | Get synthesis questions for review |
-| `/projects/{id}/nodes/{id}/feedback` | POST | Submit human feedback |
-| `/projects/{id}/nodes/needs-review` | GET | List nodes needing review |
-| `/agent-templates` | GET | List agent templates |
-| `/executions` | GET | List executions |
-| `/ws/subscribe/{project_id}` | WS | Real-time updates |
-
-## Multi-Agent Pipeline
-
-The pipeline orchestrates multiple AI agents for complex tasks:
-
-1. **Ideation**: Claude, Codex, and Gemini create plans in parallel
-2. **Synthesis**: Claude merges plans and identifies conflicts
-3. **Human Review**: Node turns RED, awaiting your feedback
-4. **Implementation**: Codex executes the approved plan
-5. **Critics**: All agents vote YES/NO on the implementation
-6. **Retry**: If critics reject, loop back with feedback
-
-Node statuses:
-- `pending` (gray) - Not started
-- `in_progress` (yellow) - Currently executing
-- `needs_review` (RED) - Human attention required
-- `completed` (green) - Successfully finished
-- `failed` (red) - Execution failed
-
-## Testing
-
+When an agent runs, you can attach to its tmux session:
 ```bash
-cd hub
-source venv/bin/activate
-pytest tests/ -v
+ssh -t root@159.65.109.198 "tmux attach -t run-{run_id}-node-{node_id}"
 ```
 
-## Common Tasks
+Artifacts (PRs, URLs, files) are extracted from agent output and shown as clickable links in the UI.
 
-### Adding a new API endpoint
-1. Create router in `hub/app/routers/`
-2. Add Pydantic models in `hub/app/models/`
-3. Register router in `hub/app/main.py`
-4. Add tests in `hub/tests/`
+## Agent Types
 
-### Adding a frontend component
-1. Create component in `desktop/src/components/`
-2. Add types to `desktop/src/lib/types.ts`
-3. Update stores if needed in `desktop/src/stores/`
-4. Build and deploy to VM
+- `claude` - Claude CLI (`claude -p "prompt"`)
+- `codex` - Codex CLI (`codex exec "prompt"`)
+- `gemini` - Gemini CLI (`gemini "prompt" -m gemini-2.5-pro -o text`)
