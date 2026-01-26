@@ -105,60 +105,167 @@
     // Draw nodes
     for (const node of $nodes) {
       const isSelected = node.id === $selectedNodeId;
+      const nodeType = node.node_type || 'task';
 
-      // Node background
-      ctx.fillStyle = isSelected ? '#0f3460' : '#16213e';
-      ctx.strokeStyle = isSelected ? '#00d9ff' : '#2a2a4a';
-      ctx.lineWidth = isSelected ? 2 : 1;
-
-      ctx.beginPath();
-      ctx.roundRect(node.position_x, node.position_y, NODE_WIDTH, NODE_HEIGHT, NODE_RADIUS);
-      ctx.fill();
-      ctx.stroke();
-
-      // Status indicator
-      const statusColors: Record<string, string> = {
-        pending: '#a0a0a0',
-        in_progress: '#ffaa00',
-        needs_review: '#ff4444',  // RED - human attention needed
-        completed: '#00ff88',
-        blocked: '#ffaa00',
-        failed: '#ff4444',
-      };
-      ctx.fillStyle = statusColors[node.status] || '#a0a0a0';
-
-      // Draw pulsing glow for needs_review status
-      if (node.status === 'needs_review') {
-        ctx.save();
-        ctx.shadowColor = '#ff4444';
-        ctx.shadowBlur = 8 + Math.sin(Date.now() / 200) * 4;  // Pulsing effect
-        ctx.beginPath();
-        ctx.arc(node.position_x + 12, node.position_y + 12, 6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
+      if (nodeType === 'hook') {
+        // Draw HOOK nodes as diamonds (purple)
+        drawHookNode(ctx, node, isSelected);
+      } else if (nodeType === 'milestone') {
+        // Draw MILESTONE nodes as hexagons (gold)
+        drawMilestoneNode(ctx, node, isSelected);
+      } else {
+        // Draw TASK nodes as rounded rectangles (default)
+        drawTaskNode(ctx, node, isSelected);
       }
-      ctx.beginPath();
-      ctx.arc(node.position_x + 12, node.position_y + 12, 4, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Title
-      ctx.fillStyle = '#e8e8e8';
-      ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
-      const maxWidth = NODE_WIDTH - 30;
-      let title = node.title;
-      while (ctx.measureText(title).width > maxWidth && title.length > 3) {
-        title = title.slice(0, -4) + '...';
-      }
-      ctx.fillText(title, node.position_x + 24, node.position_y + 16);
-
-      // Description or agent type
-      ctx.fillStyle = '#a0a0a0';
-      ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
-      const subtitle = node.agent_type || node.status;
-      ctx.fillText(subtitle, node.position_x + 12, node.position_y + 40);
     }
 
     ctx.restore();
+  }
+
+  function drawTaskNode(ctx: CanvasRenderingContext2D, node: any, isSelected: boolean) {
+    // Node background
+    ctx.fillStyle = isSelected ? '#0f3460' : '#16213e';
+    ctx.strokeStyle = isSelected ? '#00d9ff' : '#2a2a4a';
+    ctx.lineWidth = isSelected ? 2 : 1;
+
+    ctx.beginPath();
+    ctx.roundRect(node.position_x, node.position_y, NODE_WIDTH, NODE_HEIGHT, NODE_RADIUS);
+    ctx.fill();
+    ctx.stroke();
+
+    // Status indicator
+    drawStatusIndicator(ctx, node);
+
+    // Title
+    ctx.fillStyle = '#e8e8e8';
+    ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
+    const maxWidth = NODE_WIDTH - 30;
+    let title = node.title;
+    while (ctx.measureText(title).width > maxWidth && title.length > 3) {
+      title = title.slice(0, -4) + '...';
+    }
+    ctx.fillText(title, node.position_x + 24, node.position_y + 16);
+
+    // Description or agent type
+    ctx.fillStyle = '#a0a0a0';
+    ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+    const subtitle = node.agent_type || node.status;
+    ctx.fillText(subtitle, node.position_x + 12, node.position_y + 40);
+  }
+
+  function drawHookNode(ctx: CanvasRenderingContext2D, node: any, isSelected: boolean) {
+    // Diamond shape for hook nodes
+    const cx = node.position_x + NODE_WIDTH / 2;
+    const cy = node.position_y + NODE_HEIGHT / 2;
+    const hw = NODE_WIDTH / 2 - 10;  // Half width
+    const hh = NODE_HEIGHT / 2 - 5;   // Half height
+
+    // Purple color scheme for hooks
+    ctx.fillStyle = isSelected ? '#4c1d95' : '#2e1065';
+    ctx.strokeStyle = isSelected ? '#a78bfa' : '#7c3aed';
+    ctx.lineWidth = isSelected ? 2 : 1;
+
+    ctx.beginPath();
+    ctx.moveTo(cx, node.position_y + 5);       // Top
+    ctx.lineTo(cx + hw, cy);                    // Right
+    ctx.lineTo(cx, node.position_y + NODE_HEIGHT - 5);  // Bottom
+    ctx.lineTo(cx - hw, cy);                    // Left
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Hook icon (checkmark)
+    ctx.strokeStyle = '#a78bfa';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 8, cy - 2);
+    ctx.lineTo(cx - 2, cy + 4);
+    ctx.lineTo(cx + 10, cy - 6);
+    ctx.stroke();
+
+    // Title (centered)
+    ctx.fillStyle = '#e8e8e8';
+    ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.textAlign = 'center';
+    let title = node.title;
+    const maxWidth = NODE_WIDTH - 40;
+    while (ctx.measureText(title).width > maxWidth && title.length > 3) {
+      title = title.slice(0, -4) + '...';
+    }
+    ctx.fillText(title, cx, node.position_y + NODE_HEIGHT - 12);
+    ctx.textAlign = 'left';
+
+    drawStatusIndicator(ctx, node);
+  }
+
+  function drawMilestoneNode(ctx: CanvasRenderingContext2D, node: any, isSelected: boolean) {
+    // Hexagon shape for milestone nodes
+    const cx = node.position_x + NODE_WIDTH / 2;
+    const cy = node.position_y + NODE_HEIGHT / 2;
+    const r = NODE_HEIGHT / 2 - 5;
+
+    // Gold color scheme for milestones
+    ctx.fillStyle = isSelected ? '#78350f' : '#451a03';
+    ctx.strokeStyle = isSelected ? '#fbbf24' : '#f59e0b';
+    ctx.lineWidth = isSelected ? 2 : 1;
+
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i - Math.PI / 2;
+      const x = cx + r * Math.cos(angle) * 1.5;
+      const y = cy + r * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Star icon
+    ctx.fillStyle = '#fbbf24';
+    ctx.beginPath();
+    ctx.arc(cx, cy - 5, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Title (centered)
+    ctx.fillStyle = '#e8e8e8';
+    ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.textAlign = 'center';
+    let title = node.title;
+    const maxWidth = NODE_WIDTH - 40;
+    while (ctx.measureText(title).width > maxWidth && title.length > 3) {
+      title = title.slice(0, -4) + '...';
+    }
+    ctx.fillText(title, cx, node.position_y + NODE_HEIGHT - 12);
+    ctx.textAlign = 'left';
+
+    drawStatusIndicator(ctx, node);
+  }
+
+  function drawStatusIndicator(ctx: CanvasRenderingContext2D, node: any) {
+    const statusColors: Record<string, string> = {
+      pending: '#a0a0a0',
+      in_progress: '#ffaa00',
+      needs_review: '#ff4444',  // RED - human attention needed
+      completed: '#00ff88',
+      blocked: '#ffaa00',
+      failed: '#ff4444',
+    };
+    ctx.fillStyle = statusColors[node.status] || '#a0a0a0';
+
+    // Draw pulsing glow for needs_review status
+    if (node.status === 'needs_review') {
+      ctx.save();
+      ctx.shadowColor = '#ff4444';
+      ctx.shadowBlur = 8 + Math.sin(Date.now() / 200) * 4;  // Pulsing effect
+      ctx.beginPath();
+      ctx.arc(node.position_x + 12, node.position_y + 12, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.beginPath();
+    ctx.arc(node.position_x + 12, node.position_y + 12, 4, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   function getMousePos(e: MouseEvent) {

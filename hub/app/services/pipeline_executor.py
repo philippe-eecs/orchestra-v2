@@ -8,7 +8,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.db.models import NodeModel, ExecutionModel
+from app.db.models import NodeModel, ExecutionModel, DeliverableModel
 from app.models.enums import NodeStatus, AgentType
 from app.models.pipeline import (
     MultiAgentPipeline,
@@ -18,12 +18,16 @@ from app.models.pipeline import (
     IdeationResult,
     SynthesisResult,
     ImplementationResult,
+    ResearchResult,
+    ToyTestResult,
     CriticResult,
     CriticVote,
     CriticSeverity,
     DEFAULT_PIPELINE,
 )
+from app.models.deliverables import DeliverableType, DeliverableStatus
 from app.services.broadcast import manager
+from app.services.hook_executor import get_parent_deliverables
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +52,33 @@ class PipelineExecutor:
         if not node:
             raise ValueError(f"Node {node_id} not found")
 
-        # Build initial context
+        # Build initial context (includes parent deliverables)
         context = await self._build_context(node)
 
         # Create execution record
         execution = self._create_execution(node_id, pipeline.name, context)
 
         try:
-            # Phase 1: IDEATION (parallel)
+            # Phase 1: RESEARCH (Gemini web search)
+            research_step = self._find_phase(pipeline, PipelinePhase.RESEARCH)
+            if research_step:
+                context.current_phase = PipelinePhase.RESEARCH
+                await self._set_node_status(node_id, NodeStatus.IN_PROGRESS)
+                await self._update_execution_context(execution, context)
+                research_result = await self._run_research_phase(
+                    research_step, context
+                )
+                context.research = research_result
+                await self._update_execution_context(execution, context)
+
+                # Create sources.md deliverable
+                await self._create_deliverable(
+                    node_id, execution.id,
+                    DeliverableType.SOURCES, "sources.md",
+                    research_result.raw_output
+                )
+
+            # Phase 2: IDEATION (parallel)
             ideation_step = self._find_phase(pipeline, PipelinePhase.IDEATION)
             if ideation_step:
                 context.current_phase = PipelinePhase.IDEATION
@@ -66,7 +89,7 @@ class PipelineExecutor:
                 context.ideation = ideation_results
                 await self._update_execution_context(execution, context)
 
-            # Phase 2: SYNTHESIS (Claude)
+            # Phase 3: SYNTHESIS (Claude)
             synthesis_step = self._find_phase(pipeline, PipelinePhase.SYNTHESIS)
             if synthesis_step:
                 context.current_phase = PipelinePhase.SYNTHESIS
@@ -77,13 +100,44 @@ class PipelineExecutor:
                 context.synthesis = synthesis_result
                 await self._update_execution_context(execution, context)
 
+                # Create plan.md deliverable
+                await self._create_deliverable(
+                    node_id, execution.id,
+                    DeliverableType.PLAN, "plan.md",
+                    synthesis_result.final_plan
+                )
+
                 # Wait for human if required
                 if synthesis_step.wait_for_human:
                     await self._set_node_status(node_id, NodeStatus.NEEDS_REVIEW)
                     logger.info(f"Node {node_id} waiting for human review")
                     return context  # Execution will resume after human feedback
 
-            # Phase 3 & 4: Implementation and Critics loop
+            # Phase 4: TOY TESTS (optional validation experiments)
+            toy_tests_step = self._find_phase(pipeline, PipelinePhase.TOY_TESTS)
+            if toy_tests_step:
+                context.current_phase = PipelinePhase.TOY_TESTS
+                await self._update_execution_context(execution, context)
+                toy_test_result = await self._run_toy_tests_phase(
+                    toy_tests_step, context
+                )
+                context.toy_tests = toy_test_result
+                await self._update_execution_context(execution, context)
+
+                # Create test_results.md deliverable
+                await self._create_deliverable(
+                    node_id, execution.id,
+                    DeliverableType.TOY_TEST, "test_results.md",
+                    toy_test_result.raw_output
+                )
+
+                # If tests failed and step requires human review
+                if not toy_test_result.all_passed and toy_tests_step.wait_for_human:
+                    await self._set_node_status(node_id, NodeStatus.NEEDS_REVIEW)
+                    logger.info(f"Node {node_id} toy tests failed, waiting for review")
+                    return context
+
+            # Phase 5 & 6: Implementation and Critics loop
             context = await self._run_implementation_critic_loop(
                 node_id, pipeline, context, execution
             )
@@ -140,21 +194,40 @@ class PipelineExecutor:
         return context
 
     async def _build_context(self, node: NodeModel) -> PipelineContext:
-        """Build initial context from node and its parents."""
+        """Build initial context from node and its parents, including deliverables."""
         # Get parent node summaries
         parent_summaries = []
         for parent in node.parents:
-            # Get the latest completed execution output for parent
             summary = f"## {parent.title}\n"
             if parent.description:
                 summary += f"{parent.description}\n"
             parent_summaries.append(summary)
 
+        # Get parent deliverables (completed/validated)
+        parent_deliverables = get_parent_deliverables(self.db, node)
+
+        # Build parent context string including deliverables
+        parent_context_parts = []
+        for parent in node.parents:
+            ctx = f"## From: {parent.title}\n"
+            if parent.description:
+                ctx += f"{parent.description}\n\n"
+
+            # Add deliverables from this parent
+            parent_prefix = f"{parent.title}/"
+            for key, content in parent_deliverables.items():
+                if key.startswith(parent_prefix):
+                    deliverable_name = key[len(parent_prefix):]
+                    ctx += f"### {deliverable_name}\n{content}\n\n"
+
+            parent_context_parts.append(ctx)
+
         return PipelineContext(
             node_id=node.id,
             node_title=node.title,
             node_description=node.description,
-            parent_summaries="\n\n".join(parent_summaries) if parent_summaries else "No dependencies",
+            parent_summaries="\n---\n".join(parent_context_parts) if parent_context_parts else "No dependencies",
+            parent_deliverables=parent_deliverables,
         )
 
     def _create_execution(
@@ -233,6 +306,34 @@ class PipelineExecutor:
                 ideation.gemini = result
 
         return ideation
+
+    async def _run_research_phase(
+        self,
+        step: PipelineStep,
+        context: PipelineContext
+    ) -> ResearchResult:
+        """Run research phase (Gemini web search for prior art)."""
+        prompt = self._resolve_template(step.prompt_template, context)
+
+        # Use Gemini for research (has web search capability)
+        output = await self._invoke_agent(AgentType.GEMINI, prompt)
+
+        # Parse the research output
+        return self._parse_research_output(output)
+
+    async def _run_toy_tests_phase(
+        self,
+        step: PipelineStep,
+        context: PipelineContext
+    ) -> ToyTestResult:
+        """Run toy tests phase (quick validation experiments)."""
+        prompt = self._resolve_template(step.prompt_template, context)
+
+        # Use Codex for running experiments
+        output = await self._invoke_agent(AgentType.CODEX, prompt)
+
+        # Parse the toy test output
+        return self._parse_toy_test_output(output)
 
     async def _run_synthesis_phase(
         self,
@@ -423,6 +524,99 @@ class PipelineExecutor:
             elif re.match(r'\d+\.\s', line):
                 items.append(re.sub(r'^\d+\.\s*', '', line))
         return items
+
+    def _parse_research_output(self, output: str) -> ResearchResult:
+        """Parse the research output into structured result."""
+        result = ResearchResult(raw_output=output)
+
+        # Extract search queries
+        queries_match = re.search(r'## Search Queries\n(.*?)(?=##|\Z)', output, re.DOTALL)
+        if queries_match:
+            result.search_queries = self._parse_list(queries_match.group(1))
+
+        # Extract sources (title + URL pairs)
+        sources = []
+        source_pattern = r'### \[([^\]]+)\]\(([^)]+)\)(.*?)(?=###|\Z)'
+        for match in re.finditer(source_pattern, output, re.DOTALL):
+            title, url, content = match.groups()
+            insights = self._parse_list(content)
+            sources.append({
+                "title": title,
+                "url": url,
+                "insights": insights,
+            })
+        result.sources = sources
+
+        # Extract summary
+        summary_match = re.search(r'## Summary\n(.*?)(?=##|\Z)', output, re.DOTALL)
+        if summary_match:
+            result.summary = summary_match.group(1).strip()
+
+        return result
+
+    def _parse_toy_test_output(self, output: str) -> ToyTestResult:
+        """Parse the toy test output into structured result."""
+        result = ToyTestResult(raw_output=output)
+
+        # Extract test results
+        tests = []
+        test_pattern = r'### Test \d+:([^\n]+)\n(.*?)(?=### Test|\Z)'
+        for match in re.finditer(test_pattern, output, re.DOTALL):
+            test_name = match.group(1).strip()
+            test_content = match.group(2)
+
+            # Check for PASS/FAIL
+            passed = bool(re.search(r'\*\*Result:\*\*\s*PASS', test_content, re.IGNORECASE))
+
+            tests.append({
+                "test": test_name,
+                "passed": passed,
+                "content": test_content.strip(),
+            })
+
+        result.tests_run = [t["test"] for t in tests]
+        result.results = tests
+        result.all_passed = all(t["passed"] for t in tests) if tests else True
+
+        # Extract summary
+        summary_match = re.search(r'## Summary\n(.*?)(?=##|\Z)', output, re.DOTALL)
+        if summary_match:
+            result.summary = summary_match.group(1).strip()
+
+        return result
+
+    async def _create_deliverable(
+        self,
+        node_id: int,
+        execution_id: int,
+        deliverable_type: DeliverableType,
+        name: str,
+        content: str,
+    ) -> DeliverableModel:
+        """Create a deliverable record for a phase output."""
+        deliverable = DeliverableModel(
+            node_id=node_id,
+            execution_id=execution_id,
+            type=deliverable_type.value,
+            name=name,
+            content=content,
+            status=DeliverableStatus.COMPLETED.value,
+        )
+        self.db.add(deliverable)
+        self.db.commit()
+        self.db.refresh(deliverable)
+
+        # Broadcast deliverable created event
+        await manager.broadcast(self.project_id, "deliverable.created", {
+            "node_id": node_id,
+            "execution_id": execution_id,
+            "deliverable_id": deliverable.id,
+            "type": deliverable_type.value,
+            "name": name,
+        })
+
+        logger.info(f"Created deliverable {name} for node {node_id}")
+        return deliverable
 
     def _parse_critic_output(self, output: str, agent_type: AgentType) -> CriticResult:
         """Parse critic output into structured result."""

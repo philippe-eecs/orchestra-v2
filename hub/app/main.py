@@ -18,6 +18,8 @@ from app.routers import (
     executions_router,
     launch_router,
     feedback_router,
+    deliverables_router,
+    hooks_router,
 )
 
 
@@ -63,6 +65,8 @@ app.include_router(agent_templates_router)
 app.include_router(executions_router)
 app.include_router(launch_router)
 app.include_router(feedback_router)
+app.include_router(deliverables_router)
+app.include_router(hooks_router)
 
 
 @app.get("/health")

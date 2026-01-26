@@ -1,6 +1,16 @@
 export type NodeStatus = 'pending' | 'in_progress' | 'needs_review' | 'completed' | 'blocked' | 'failed';
+export type NodeType = 'task' | 'hook' | 'milestone';
 export type AgentType = 'claude' | 'codex' | 'gemini' | 'custom';
 export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+// Deliverable Types
+export type DeliverableType = 'plan' | 'sources' | 'toy_test' | 'code' | 'custom';
+export type DeliverableStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'validated';
+
+// Hook Types
+export type HookTrigger = 'phase_end' | 'deliverable_produced' | 'manual';
+export type HookAction = 'validate' | 'gate' | 'retry';
+export type HookStatus = 'pending' | 'running' | 'passed' | 'failed' | 'awaiting_approval';
 
 export interface Resource {
   kind: string;
@@ -13,6 +23,87 @@ export interface NodeMetadata {
   resources: Resource[];
   deliverables?: string;
   extra: Record<string, unknown>;
+}
+
+// Deliverable Schema (expected deliverables)
+export interface DeliverableSchema {
+  type: DeliverableType;
+  name: string;
+  required: boolean;
+  description?: string;
+}
+
+// Deliverable (produced output)
+export interface Deliverable {
+  id: number;
+  node_id: number;
+  execution_id?: number;
+  type: DeliverableType;
+  name: string;
+  content: string;
+  status: DeliverableStatus;
+  validation_errors: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface DeliverableCreate {
+  node_id: number;
+  execution_id?: number;
+  type: DeliverableType;
+  name: string;
+  content?: string;
+  status?: DeliverableStatus;
+}
+
+export interface DeliverableUpdate {
+  content?: string;
+  status?: DeliverableStatus;
+  validation_errors?: string[];
+}
+
+// Hook Node Configuration
+export interface HookNode {
+  id: number;
+  node_id: number;
+  name: string;
+  trigger: HookTrigger;
+  action: HookAction;
+  required_deliverables: string[];
+  validation_rules: Record<string, string>;
+  requires_human_approval: boolean;
+  max_retries: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface HookNodeCreate {
+  node_id: number;
+  name?: string;
+  trigger?: HookTrigger;
+  action?: HookAction;
+  required_deliverables?: string[];
+  validation_rules?: Record<string, string>;
+  requires_human_approval?: boolean;
+  max_retries?: number;
+}
+
+export interface HookNodeUpdate {
+  name?: string;
+  trigger?: HookTrigger;
+  action?: HookAction;
+  required_deliverables?: string[];
+  validation_rules?: Record<string, string>;
+  requires_human_approval?: boolean;
+  max_retries?: number;
+}
+
+export interface HookResult {
+  status: HookStatus;
+  message: string;
+  validation_errors: string[];
+  passed_deliverables: string[];
+  failed_deliverables: string[];
 }
 
 export interface Project {
@@ -34,10 +125,13 @@ export interface Node {
   title: string;
   description?: string;
   status: NodeStatus;
+  node_type: NodeType;
   agent_type?: AgentType;
   prompt?: string;
   context?: string;
   metadata: NodeMetadata;
+  expected_deliverables: DeliverableSchema[];
+  deliverables?: Deliverable[];  // Populated when fetching full node details
   position_x: number;
   position_y: number;
   parent_ids: number[];
@@ -49,10 +143,12 @@ export interface NodeCreate {
   title: string;
   description?: string;
   status?: NodeStatus;
+  node_type?: NodeType;
   agent_type?: AgentType;
   prompt?: string;
   context?: string;
   metadata?: NodeMetadata;
+  expected_deliverables?: DeliverableSchema[];
   position_x?: number;
   position_y?: number;
   parent_ids?: number[];
@@ -62,10 +158,12 @@ export interface NodeUpdate {
   title?: string;
   description?: string;
   status?: NodeStatus;
+  node_type?: NodeType;
   agent_type?: AgentType;
   prompt?: string;
   context?: string;
   metadata?: NodeMetadata;
+  expected_deliverables?: DeliverableSchema[];
   position_x?: number;
   position_y?: number;
   parent_ids?: number[];
@@ -307,7 +405,7 @@ export interface TerminalMessage {
 }
 
 // Pipeline Types
-export type PipelinePhase = 'ideation' | 'synthesis' | 'implement' | 'critic';
+export type PipelinePhase = 'research' | 'ideation' | 'synthesis' | 'toy_tests' | 'implement' | 'critic' | 'validation';
 
 export interface SynthesisQuestions {
   node_id: number;

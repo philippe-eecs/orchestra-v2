@@ -14,6 +14,8 @@ import type {
   LaunchPreview, LaunchRequest,
   SynthesisQuestions, FeedbackSubmission, FeedbackResponse,
   PipelineLaunchRequest, PipelineLaunchResponse,
+  Deliverable, DeliverableCreate, DeliverableUpdate,
+  HookNode, HookNodeCreate, HookNodeUpdate, HookResult,
 } from './types';
 
 class ApiClient {
@@ -272,6 +274,73 @@ class ApiClient {
       'POST',
       `/projects/${projectId}/nodes/${nodeId}/launch-pipeline`,
       request
+    );
+  }
+
+  // Deliverables
+  async listDeliverables(projectId: number, nodeId: number, status?: string): Promise<Deliverable[]> {
+    const params = status ? `?status=${status}` : '';
+    return this.request<Deliverable[]>('GET', `/projects/${projectId}/nodes/${nodeId}/deliverables${params}`);
+  }
+
+  async getDeliverable(projectId: number, nodeId: number, deliverableId: number): Promise<Deliverable> {
+    return this.request<Deliverable>('GET', `/projects/${projectId}/nodes/${nodeId}/deliverables/${deliverableId}`);
+  }
+
+  async createDeliverable(projectId: number, nodeId: number, data: DeliverableCreate): Promise<Deliverable> {
+    return this.request<Deliverable>('POST', `/projects/${projectId}/nodes/${nodeId}/deliverables`, data);
+  }
+
+  async updateDeliverable(
+    projectId: number,
+    nodeId: number,
+    deliverableId: number,
+    data: DeliverableUpdate
+  ): Promise<Deliverable> {
+    return this.request<Deliverable>(
+      'PATCH',
+      `/projects/${projectId}/nodes/${nodeId}/deliverables/${deliverableId}`,
+      data
+    );
+  }
+
+  async deleteDeliverable(projectId: number, nodeId: number, deliverableId: number): Promise<void> {
+    await this.request<void>('DELETE', `/projects/${projectId}/nodes/${nodeId}/deliverables/${deliverableId}`);
+  }
+
+  // Hooks
+  async getHookConfig(projectId: number, nodeId: number): Promise<HookNode> {
+    return this.request<HookNode>('GET', `/projects/${projectId}/nodes/${nodeId}/hook`);
+  }
+
+  async createHookConfig(projectId: number, nodeId: number, data: HookNodeCreate): Promise<HookNode> {
+    return this.request<HookNode>('POST', `/projects/${projectId}/nodes/${nodeId}/hook`, data);
+  }
+
+  async updateHookConfig(projectId: number, nodeId: number, data: HookNodeUpdate): Promise<HookNode> {
+    return this.request<HookNode>('PATCH', `/projects/${projectId}/nodes/${nodeId}/hook`, data);
+  }
+
+  async deleteHookConfig(projectId: number, nodeId: number): Promise<void> {
+    await this.request<void>('DELETE', `/projects/${projectId}/nodes/${nodeId}/hook`);
+  }
+
+  async executeHook(projectId: number, nodeId: number, sourceNodeId: number): Promise<HookResult> {
+    return this.request<HookResult>(
+      'POST',
+      `/projects/${projectId}/nodes/${nodeId}/hook/execute?source_node_id=${sourceNodeId}`
+    );
+  }
+
+  async validateNodeDeliverables(
+    projectId: number,
+    nodeId: number,
+    requiredDeliverables: string[]
+  ): Promise<HookResult> {
+    return this.request<HookResult>(
+      'POST',
+      `/projects/${projectId}/nodes/${nodeId}/validate`,
+      requiredDeliverables
     );
   }
 }

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.db.models import ProjectModel, NodeModel
 from app.models import Node, NodeCreate, NodeUpdate, Graph, Edge, NodeMetadata
+from app.models.deliverables import DeliverableSchema
 from app.services.broadcast import manager
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["nodes"])
@@ -11,16 +12,27 @@ router = APIRouter(prefix="/projects/{project_id}", tags=["nodes"])
 
 def node_to_response(node: NodeModel) -> Node:
     """Convert NodeModel to Node response with parent_ids."""
+    # Parse expected_deliverables from JSON
+    expected_deliverables = []
+    if node.expected_deliverables:
+        for d in node.expected_deliverables:
+            if isinstance(d, dict):
+                expected_deliverables.append(DeliverableSchema(**d))
+            else:
+                expected_deliverables.append(d)
+
     return Node(
         id=node.id,
         project_id=node.project_id,
         title=node.title,
         description=node.description,
         status=node.status,
+        node_type=node.node_type or "task",
         agent_type=node.agent_type,
         prompt=node.prompt,
         context=node.context,
         metadata=NodeMetadata(**node.node_metadata) if node.node_metadata else NodeMetadata(),
+        expected_deliverables=expected_deliverables,
         position_x=node.position_x,
         position_y=node.position_y,
         parent_ids=[p.id for p in node.parents],
@@ -59,6 +71,13 @@ async def create_node(project_id: int, node: NodeCreate, db: Session = Depends(g
         node_data["node_metadata"] = node_data.pop("metadata")
         if hasattr(node_data["node_metadata"], "model_dump"):
             node_data["node_metadata"] = node_data["node_metadata"].model_dump()
+
+    # Convert expected_deliverables to JSON-serializable format
+    if "expected_deliverables" in node_data and node_data["expected_deliverables"]:
+        node_data["expected_deliverables"] = [
+            d.model_dump() if hasattr(d, "model_dump") else d
+            for d in node_data["expected_deliverables"]
+        ]
 
     db_node = NodeModel(project_id=project_id, **node_data)
 
@@ -120,6 +139,13 @@ async def update_node(project_id: int, node_id: int, node: NodeUpdate, db: Sessi
         update_data["node_metadata"] = update_data.pop("metadata")
         if hasattr(update_data["node_metadata"], "model_dump"):
             update_data["node_metadata"] = update_data["node_metadata"].model_dump()
+
+    # Handle expected_deliverables
+    if "expected_deliverables" in update_data and update_data["expected_deliverables"]:
+        update_data["expected_deliverables"] = [
+            d.model_dump() if hasattr(d, "model_dump") else d
+            for d in update_data["expected_deliverables"]
+        ]
 
     for key, value in update_data.items():
         setattr(db_node, key, value)

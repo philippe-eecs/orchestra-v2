@@ -2,7 +2,8 @@ from datetime import datetime
 from typing import Any
 from pydantic import BaseModel, Field
 
-from .enums import NodeStatus, AgentType
+from .enums import NodeStatus, AgentType, NodeType
+from .deliverables import DeliverableSchema
 
 
 class Resource(BaseModel):
@@ -21,10 +22,12 @@ class NodeBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     status: NodeStatus = NodeStatus.PENDING
+    node_type: NodeType = NodeType.TASK
     agent_type: AgentType | None = None
     prompt: str | None = None
     context: str | None = None
     metadata: NodeMetadata = Field(default_factory=NodeMetadata)
+    expected_deliverables: list[DeliverableSchema] = Field(default_factory=list)
     position_x: float = 0.0
     position_y: float = 0.0
 
@@ -37,10 +40,12 @@ class NodeUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=255)
     description: str | None = None
     status: NodeStatus | None = None
+    node_type: NodeType | None = None
     agent_type: AgentType | None = None
     prompt: str | None = None
     context: str | None = None
     metadata: NodeMetadata | None = None
+    expected_deliverables: list[DeliverableSchema] | None = None
     position_x: float | None = None
     position_y: float | None = None
     parent_ids: list[int] | None = None

@@ -44,10 +44,12 @@ class NodeModel(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     status = Column(String(50), default="pending")
+    node_type = Column(String(50), default="task")  # task, hook, milestone
     agent_type = Column(String(50), nullable=True)
     prompt = Column(Text, nullable=True)
     context = Column(Text, nullable=True)
     node_metadata = Column(JSON, default=dict)
+    expected_deliverables = Column(JSON, default=list)  # List of DeliverableSchema dicts
     position_x = Column(Float, default=0.0)
     position_y = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -56,6 +58,8 @@ class NodeModel(Base):
     project = relationship("ProjectModel", back_populates="nodes")
     tasks = relationship("TaskModel", back_populates="node", cascade="all, delete-orphan")
     runs = relationship("RunModel", back_populates="node", cascade="all, delete-orphan")
+    deliverables = relationship("DeliverableModel", back_populates="node", cascade="all, delete-orphan")
+    hook_config = relationship("HookNodeModel", back_populates="node", uselist=False, cascade="all, delete-orphan")
 
     parents = relationship(
         "NodeModel",
@@ -193,3 +197,41 @@ class StepRunModel(Base):
 
     execution = relationship("ExecutionModel", back_populates="step_runs")
     step = relationship("AgentStepModel", back_populates="step_runs")
+
+
+class DeliverableModel(Base):
+    """Structured outputs from pipeline phases."""
+    __tablename__ = "deliverables"
+
+    id = Column(Integer, primary_key=True, index=True)
+    node_id = Column(Integer, ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False)
+    execution_id = Column(Integer, ForeignKey("executions.id", ondelete="SET NULL"), nullable=True)
+    type = Column(String(50), nullable=False)  # plan, sources, toy_test, code, custom
+    name = Column(String(255), nullable=False)  # plan.md, sources.md, etc.
+    content = Column(Text, default="")
+    status = Column(String(50), default="pending")  # pending, in_progress, completed, failed, validated
+    validation_errors = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    node = relationship("NodeModel", back_populates="deliverables")
+    execution = relationship("ExecutionModel", backref="deliverables")
+
+
+class HookNodeModel(Base):
+    """Configuration for hook-type nodes."""
+    __tablename__ = "hook_nodes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    node_id = Column(Integer, ForeignKey("nodes.id", ondelete="CASCADE"), unique=True, nullable=False)
+    name = Column(String(255), default="Validation Hook")
+    trigger = Column(String(50), nullable=False)  # phase_end, deliverable_produced, manual
+    action = Column(String(50), nullable=False)  # validate, gate, retry
+    required_deliverables = Column(JSON, default=list)  # ["plan.md", "sources.md"]
+    validation_rules = Column(JSON, default=dict)  # deliverable_name -> regex pattern
+    requires_human_approval = Column(Boolean, default=False)
+    max_retries = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    node = relationship("NodeModel", back_populates="hook_config")

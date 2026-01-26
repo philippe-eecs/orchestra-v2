@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import type { Node, NodeUpdate, NodeStatus, AgentType, AgentTemplate, SynthesisQuestions, FeedbackSubmission } from '../../lib/types';
+  import type { Node, NodeUpdate, NodeStatus, AgentType, AgentTemplate, SynthesisQuestions, FeedbackSubmission, Deliverable, DeliverableSchema } from '../../lib/types';
   import { updateNode, deleteNode } from '../../stores/graph';
   import { templates, loadTemplates } from '../../stores/agentTemplates';
   import { launch, previewLaunch } from '../../stores/executions';
@@ -45,6 +45,12 @@
   // Pipeline launch state
   let launchingPipeline = false;
 
+  // Deliverables state
+  let deliverables: Deliverable[] = [];
+  let loadingDeliverables = false;
+  let selectedDeliverable: Deliverable | null = null;
+  let showDeliverableModal = false;
+
   // Computed: use prompt if available, otherwise description
   $: displayInstructions = node.prompt || node.description || '';
 
@@ -58,6 +64,45 @@
     synthesis = null;
     feedbackAnswers = {};
     feedbackNotes = '';
+  }
+
+  // Load deliverables when node changes
+  $: if (node.id) {
+    loadDeliverables();
+  }
+
+  async function loadDeliverables() {
+    const projectId = get(selectedProjectId);
+    if (!projectId) return;
+
+    loadingDeliverables = true;
+    try {
+      deliverables = await api.listDeliverables(projectId, node.id);
+    } catch (e) {
+      console.error('Failed to load deliverables:', e);
+      deliverables = [];
+    } finally {
+      loadingDeliverables = false;
+    }
+  }
+
+  function viewDeliverable(d: Deliverable) {
+    selectedDeliverable = d;
+    showDeliverableModal = true;
+  }
+
+  function getDeliverableForSchema(schema: DeliverableSchema): Deliverable | undefined {
+    return deliverables.find(d => d.name === schema.name);
+  }
+
+  function getDeliverableStatusColor(status: string): string {
+    switch (status) {
+      case 'completed': return 'var(--accent-success)';
+      case 'validated': return '#00d9ff';
+      case 'failed': return 'var(--accent-error)';
+      case 'in_progress': return 'var(--accent-warning)';
+      default: return 'var(--text-secondary)';
+    }
   }
 
   async function loadSynthesisQuestions() {
@@ -317,6 +362,60 @@
         <ResourceEditor nodeId={node.id} resources={node.metadata.resources} />
       </div>
 
+      {#if node.expected_deliverables && node.expected_deliverables.length > 0}
+        <div class="section">
+          <h4>Deliverables</h4>
+          <div class="deliverables-list">
+            {#each node.expected_deliverables as schema}
+              {@const produced = getDeliverableForSchema(schema)}
+              <div class="deliverable-row">
+                <div class="deliverable-info">
+                  <span class="deliverable-name">{schema.name}</span>
+                  {#if schema.required}
+                    <span class="required-badge">required</span>
+                  {/if}
+                </div>
+                <div class="deliverable-status">
+                  {#if produced}
+                    <span class="status-dot" style="background: {getDeliverableStatusColor(produced.status)}"></span>
+                    <span class="status-text">{produced.status}</span>
+                    <button class="view-btn" on:click={() => viewDeliverable(produced)}>
+                      View
+                    </button>
+                  {:else}
+                    <span class="status-dot" style="background: var(--text-secondary)"></span>
+                    <span class="status-text pending">pending</span>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      {#if deliverables.length > 0 && (!node.expected_deliverables || node.expected_deliverables.length === 0)}
+        <div class="section">
+          <h4>Produced Deliverables</h4>
+          <div class="deliverables-list">
+            {#each deliverables as d}
+              <div class="deliverable-row">
+                <div class="deliverable-info">
+                  <span class="deliverable-name">{d.name}</span>
+                  <span class="deliverable-type">{d.type}</span>
+                </div>
+                <div class="deliverable-status">
+                  <span class="status-dot" style="background: {getDeliverableStatusColor(d.status)}"></span>
+                  <span class="status-text">{d.status}</span>
+                  <button class="view-btn" on:click={() => viewDeliverable(d)}>
+                    View
+                  </button>
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
       {#if node.status === 'needs_review' && synthesis}
         <div class="section feedback-section">
           <h4 class="review-header">
@@ -415,6 +514,31 @@
   open={showEditModal}
   on:close={() => showEditModal = false}
 />
+
+<!-- Deliverable Content Modal -->
+<Modal title={selectedDeliverable?.name || 'Deliverable'} open={showDeliverableModal} on:close={() => showDeliverableModal = false}>
+  <div class="deliverable-modal-content">
+    {#if selectedDeliverable}
+      <div class="deliverable-meta">
+        <span class="label">Type:</span>
+        <span class="value">{selectedDeliverable.type}</span>
+        <span class="label">Status:</span>
+        <span class="value" style="color: {getDeliverableStatusColor(selectedDeliverable.status)}">{selectedDeliverable.status}</span>
+      </div>
+      {#if selectedDeliverable.validation_errors && selectedDeliverable.validation_errors.length > 0}
+        <div class="validation-errors">
+          <span class="label">Validation Errors:</span>
+          <ul>
+            {#each selectedDeliverable.validation_errors as error}
+              <li>{error}</li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+      <pre class="deliverable-content">{selectedDeliverable.content || '(empty)'}</pre>
+    {/if}
+  </div>
+</Modal>
 
 <Modal title="Launch Agent" open={showLaunchModal} on:close={() => showLaunchModal = false}>
   <div class="launch-modal-content">
@@ -814,5 +938,139 @@
     display: flex;
     gap: 8px;
     justify-content: flex-end;
+  }
+
+  /* Deliverables Section */
+  .deliverables-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .deliverable-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+  }
+
+  .deliverable-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .deliverable-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .deliverable-type {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+  }
+
+  .required-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    background: color-mix(in srgb, var(--accent-warning) 20%, transparent);
+    color: var(--accent-warning);
+    border-radius: 4px;
+    text-transform: uppercase;
+    font-weight: 500;
+  }
+
+  .deliverable-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
+  .status-text {
+    font-size: 12px;
+    color: var(--text-primary);
+    text-transform: capitalize;
+  }
+
+  .status-text.pending {
+    color: var(--text-secondary);
+  }
+
+  .view-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .view-btn:hover {
+    background: var(--accent-primary);
+    color: white;
+    border-color: var(--accent-primary);
+  }
+
+  /* Deliverable Modal */
+  .deliverable-modal-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .deliverable-meta {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-size: 13px;
+  }
+
+  .deliverable-meta .label {
+    color: var(--text-secondary);
+  }
+
+  .deliverable-meta .value {
+    margin-right: 12px;
+  }
+
+  .validation-errors {
+    background: color-mix(in srgb, var(--accent-error) 10%, transparent);
+    border: 1px solid var(--accent-error);
+    border-radius: 4px;
+    padding: 8px 12px;
+  }
+
+  .validation-errors ul {
+    margin: 4px 0 0 16px;
+    padding: 0;
+  }
+
+  .validation-errors li {
+    font-size: 12px;
+    color: var(--accent-error);
+  }
+
+  .deliverable-content {
+    background: var(--bg-primary);
+    padding: 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    max-height: 400px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
   }
 </style>

@@ -46,3 +46,10 @@ class OutputFormat(str, Enum):
     JSON = "json"
     CODE = "code"
     MARKDOWN = "markdown"
+
+
+class NodeType(str, Enum):
+    """Types of nodes in the DAG."""
+    TASK = "task"           # Regular work node
+    HOOK = "hook"           # Validation/gate node
+    MILESTONE = "milestone" # Progress marker

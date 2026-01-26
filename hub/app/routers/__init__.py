@@ -8,6 +8,8 @@ from .agent_templates import router as agent_templates_router
 from .executions import router as executions_router
 from .launch import router as launch_router
 from .feedback import router as feedback_router
+from .deliverables import router as deliverables_router
+from .hooks import router as hooks_router
 
 __all__ = [
     "projects_router",
@@ -20,4 +22,6 @@ __all__ = [
     "executions_router",
     "launch_router",
     "feedback_router",
+    "deliverables_router",
+    "hooks_router",
 ]

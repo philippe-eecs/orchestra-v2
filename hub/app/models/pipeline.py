@@ -9,10 +9,13 @@ from .enums import AgentType
 
 class PipelinePhase(str, Enum):
     """Phases in the multi-agent pipeline."""
+    RESEARCH = "research"        # NEW: Gemini web search for prior art
     IDEATION = "ideation"        # All agents parallel, same prompt
     SYNTHESIS = "synthesis"      # Claude merges + asks questions
+    TOY_TESTS = "toy_tests"      # NEW: Quick experiments to validate approach
     IMPLEMENTATION = "implement" # Codex executes plan
-    CRITIC = "critic"           # N critics vote YES/NO
+    CRITIC = "critic"            # N critics vote YES/NO
+    VALIDATION = "validation"    # NEW: Hook validation of deliverables
 
 
 class PipelineStep(BaseModel):
@@ -81,17 +84,37 @@ class ImplementationResult(BaseModel):
     artifacts: list[str] = Field(default_factory=list)  # File paths modified
 
 
+class ResearchResult(BaseModel):
+    """Results from the research phase."""
+    search_queries: list[str] = Field(default_factory=list)
+    sources: list[dict] = Field(default_factory=list)  # [{title, url, insights}]
+    summary: str = ""
+    raw_output: str = ""  # Full Gemini output
+
+
+class ToyTestResult(BaseModel):
+    """Results from the toy tests phase."""
+    tests_run: list[str] = Field(default_factory=list)
+    results: list[dict] = Field(default_factory=list)  # [{test, passed, output}]
+    all_passed: bool = True
+    summary: str = ""
+    raw_output: str = ""
+
+
 class PipelineContext(BaseModel):
     """Full context passed through the pipeline."""
     node_id: int
     node_title: str
     node_description: Optional[str] = None
     parent_summaries: str = ""  # Context from parent nodes
+    parent_deliverables: dict[str, str] = Field(default_factory=dict)  # name -> content
 
     # Phase results (populated as pipeline progresses)
+    research: Optional[ResearchResult] = None
     ideation: Optional[IdeationResult] = None
     synthesis: Optional[SynthesisResult] = None
     human_input: Optional[HumanFeedback] = None
+    toy_tests: Optional[ToyTestResult] = None
     implementation: Optional[ImplementationResult] = None
     critic_feedback: Optional[str] = None  # Aggregated feedback for retries
 
@@ -114,6 +137,44 @@ class PipelineExecution(BaseModel):
 
 
 # Default Pipeline Definition
+
+RESEARCH_PROMPT = """## Task: {{node.title}}
+
+{{node.description}}
+
+## Context from dependencies:
+{{parent_summaries}}
+
+## Your Assignment - RESEARCH:
+Search the web and gather relevant sources for this task.
+
+1. Identify 3-5 search queries that would find relevant prior art, papers, docs, or tutorials
+2. For each source found, extract key insights relevant to the task
+3. Summarize how these sources inform the approach
+
+Output format (sources.md):
+```markdown
+## Search Queries
+1. [query 1]
+2. [query 2]
+...
+
+## Sources
+### [Title](URL)
+- Key insight 1
+- Key insight 2
+
+### [Title](URL)
+- Key insight 1
+- Key insight 2
+
+## Summary
+Brief synthesis of how these sources inform the approach...
+```
+
+IMPORTANT: Include actual URLs from your web search. This is the research phase - gather real information.
+"""
+
 IDEATION_PROMPT = """## Task: {{node.title}}
 
 {{node.description}}
@@ -121,8 +182,15 @@ IDEATION_PROMPT = """## Task: {{node.title}}
 ## Context from dependencies:
 {{parent_summaries}}
 
+## Research Findings:
+{{research.summary}}
+
+## Sources:
+{{research.raw_output}}
+
 ## Your Assignment:
 Create a detailed plan (plan.md) for completing this task.
+Use the research findings to inform your approach.
 Include: approach, steps, potential issues, and estimated complexity.
 """
 
@@ -160,16 +228,59 @@ Output format:
 ```
 """
 
+TOY_TESTS_PROMPT = """## Final Plan (Human-Approved):
+{{synthesis.final_plan}}
+
+## Human Clarifications:
+{{human_input}}
+
+## Your Assignment - TOY TESTS:
+Before full implementation, run quick experiments to validate key assumptions.
+
+1. Identify 2-3 assumptions that could be validated with small tests
+2. Write and run minimal code snippets to test these assumptions
+3. Report results for each test
+
+Output format (test_results.md):
+```markdown
+## Assumptions to Test
+1. [assumption 1]
+2. [assumption 2]
+
+## Test Results
+
+### Test 1: [assumption being tested]
+```code
+[minimal code snippet]
+```
+**Result:** PASS/FAIL
+**Output:** [actual output]
+**Implications:** [what this means for the plan]
+
+### Test 2: ...
+
+## Summary
+- Tests passed: X/Y
+- Adjustments needed: [any changes to the plan based on results]
+```
+
+If a test fails, explain what needs to change in the implementation approach.
+"""
+
 IMPLEMENTATION_PROMPT = """## Final Plan (Human-Approved):
 {{synthesis.final_plan}}
 
 ## Human Clarifications:
 {{human_input}}
 
+## Toy Test Results:
+{{toy_tests.summary}}
+
 ## Previous Critic Feedback (if retry):
 {{critic_feedback}}
 
-Execute this plan. Produce working code/artifacts.
+Execute this plan. Use the toy test results to guide implementation.
+Produce working code/artifacts.
 """
 
 CRITIC_PROMPT = """## Original Task:
@@ -196,28 +307,41 @@ FEEDBACK: Specific improvements if NO
 
 
 DEFAULT_PIPELINE = MultiAgentPipeline(
-    name="Standard Multi-Agent Review",
+    name="Research-Driven Multi-Agent Pipeline",
     phases=[
-        # Phase 1: All agents ideate in parallel
+        # Phase 1: RESEARCH - Gemini searches the web for prior art
+        PipelineStep(
+            phase=PipelinePhase.RESEARCH,
+            agents=[AgentType.GEMINI],
+            prompt_template=RESEARCH_PROMPT,
+        ),
+        # Phase 2: IDEATION - All agents create plans with research context
         PipelineStep(
             phase=PipelinePhase.IDEATION,
             agents=[AgentType.CLAUDE, AgentType.CODEX, AgentType.GEMINI],
             prompt_template=IDEATION_PROMPT,
         ),
-        # Phase 2: Claude synthesizes
+        # Phase 3: SYNTHESIS - Claude merges plans, identifies conflicts
         PipelineStep(
             phase=PipelinePhase.SYNTHESIS,
             agents=[AgentType.CLAUDE],
             wait_for_human=True,  # RED SIGNAL - waits for human
             prompt_template=SYNTHESIS_PROMPT,
         ),
-        # Phase 3: Codex implements
+        # Phase 4: TOY TESTS - Codex runs quick experiments
+        PipelineStep(
+            phase=PipelinePhase.TOY_TESTS,
+            agents=[AgentType.CODEX],
+            wait_for_human=False,  # Auto-proceed unless tests fail
+            prompt_template=TOY_TESTS_PROMPT,
+        ),
+        # Phase 5: IMPLEMENTATION - Codex executes the plan
         PipelineStep(
             phase=PipelinePhase.IMPLEMENTATION,
             agents=[AgentType.CODEX],
             prompt_template=IMPLEMENTATION_PROMPT,
         ),
-        # Phase 4: Critics vote (all 3 models, each x critics_per_model)
+        # Phase 6: CRITICS - All agents vote on the implementation
         PipelineStep(
             phase=PipelinePhase.CRITIC,
             agents=[AgentType.CLAUDE, AgentType.CODEX, AgentType.GEMINI],
