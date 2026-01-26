@@ -8,7 +8,6 @@
   import Button from '../shared/Button.svelte';
   import StatusBadge from '../shared/StatusBadge.svelte';
   import ResourceEditor from './ResourceEditor.svelte';
-  import AgentLauncher from './AgentLauncher.svelte';
   import EditNodeModal from '../modals/EditNodeModal.svelte';
   import Modal from '../shared/Modal.svelte';
 
@@ -17,9 +16,8 @@
   const dispatch = createEventDispatcher();
 
   let showEditModal = false;
-  let showLaunchModal = false;
-  let selectedAgent: 'claude' | 'codex' | 'gemini' | null = null;
-  let createWorktree = false;
+  let showRunModal = false;
+  let selectedWorkflow: 'claude' | 'codex' | 'gemini' | 'pipeline' | null = null;
   let launching = false;
 
   let editing = false;
@@ -38,9 +36,6 @@
   let feedbackNotes = '';
   let submittingFeedback = false;
   let feedbackError: string | null = null;
-
-  // Pipeline launch state
-  let launchingPipeline = false;
 
   // Deliverables state
   let deliverables: Deliverable[] = [];
@@ -143,21 +138,6 @@
     }
   }
 
-  async function launchPipeline() {
-    const projectId = get(selectedProjectId);
-    if (!projectId) return;
-
-    launchingPipeline = true;
-    error = null;
-
-    try {
-      await api.launchPipeline(projectId, node.id);
-    } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to launch pipeline';
-    } finally {
-      launchingPipeline = false;
-    }
-  }
 
   $: {
     // Reset form when node changes
@@ -215,14 +195,14 @@
   }
 
 
-  function openLaunchModal() {
-    // Default to node's agent type, or codex for implementation
-    selectedAgent = (node.agent_type as 'claude' | 'codex' | 'gemini') || 'codex';
-    showLaunchModal = true;
+  function openRunModal() {
+    // Default to pipeline for multi-agent collaboration
+    selectedWorkflow = 'pipeline';
+    showRunModal = true;
   }
 
-  async function handleQuickRun() {
-    if (!selectedAgent) return;
+  async function handleRun() {
+    if (!selectedWorkflow) return;
 
     const projectId = get(selectedProjectId);
     if (!projectId) return;
@@ -231,14 +211,13 @@
     error = null;
 
     try {
-      // TODO: Implement direct agent run API
-      // For now, use the pipeline with a single agent
+      // All workflows use the pipeline API
       await api.launchPipeline(projectId, node.id, {
         use_default_pipeline: true,
       });
-      showLaunchModal = false;
+      showRunModal = false;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to run agent';
+      error = e instanceof Error ? e.message : 'Failed to run workflow';
     } finally {
       launching = false;
     }
@@ -306,18 +285,11 @@
         <h3>{node.title}</h3>
         <div class="header-actions">
           <button
-            class="pipeline-btn"
-            on:click={launchPipeline}
-            disabled={launchingPipeline || node.status === 'in_progress' || node.status === 'needs_review'}
-            title="Launch multi-agent pipeline (Ideate → Synthesize → Implement → Review)"
+            class="run-btn"
+            on:click={openRunModal}
+            disabled={node.status === 'in_progress' || node.status === 'needs_review'}
+            title="Run a workflow to complete this node"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M12 6v6l4 2"/>
-            </svg>
-            {launchingPipeline ? 'Starting...' : 'Pipeline'}
-          </button>
-          <button class="launch-btn" on:click={openLaunchModal} title="Run single agent on this node">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="5 3 19 12 5 21 5 3"/>
             </svg>
@@ -497,13 +469,6 @@
         </div>
       {/if}
 
-      {#if node.agent_type && node.status !== 'needs_review'}
-        <div class="section">
-          <h4>Run Agent</h4>
-          <AgentLauncher {node} />
-        </div>
-      {/if}
-
       <div class="actions">
         <Button on:click={() => editing = true}>Edit</Button>
         <Button variant="danger" on:click={handleDelete}>Delete</Button>
@@ -543,67 +508,79 @@
   </div>
 </Modal>
 
-<Modal title="Run Agent" open={showLaunchModal} on:close={() => showLaunchModal = false}>
-  <div class="launch-modal-content">
-    <div class="launch-summary">
+<Modal title="Run Workflow" open={showRunModal} on:close={() => showRunModal = false}>
+  <div class="run-modal-content">
+    <div class="node-summary">
       <h4>{node.title}</h4>
-      {#if node.prompt || node.description}
-        <div class="launch-field">
-          <span class="field-label">Instructions:</span>
-          <p class="field-value">{(node.prompt || node.description || '').slice(0, 300)}{(node.prompt || node.description || '').length > 300 ? '...' : ''}</p>
-        </div>
-      {/if}
       {#if node.expected_deliverables && node.expected_deliverables.length > 0}
-        <div class="launch-field">
-          <span class="field-label">Expected Output:</span>
-          <p class="field-value">{node.expected_deliverables.map(d => d.name).join(', ')}</p>
+        <div class="deliverables-preview">
+          <span class="field-label">Deliverables to produce:</span>
+          <div class="deliverable-tags">
+            {#each node.expected_deliverables as d}
+              <span class="deliverable-tag">{d.name}</span>
+            {/each}
+          </div>
         </div>
       {/if}
     </div>
 
-    <div class="launch-field">
-      <span class="field-label">Select Agent:</span>
-      <div class="agent-buttons">
+    <div class="workflow-section">
+      <span class="field-label">Select Workflow:</span>
+      <div class="workflow-buttons">
         <button
-          class="agent-btn claude"
-          class:selected={selectedAgent === 'claude'}
-          on:click={() => selectedAgent = 'claude'}
+          class="workflow-btn pipeline"
+          class:selected={selectedWorkflow === 'pipeline'}
+          on:click={() => selectedWorkflow = 'pipeline'}
         >
-          <span class="agent-icon">🧠</span>
-          Claude
-          <span class="agent-desc">Planning & Synthesis</span>
+          <div class="workflow-header">
+            <span class="workflow-icon">🔄</span>
+            <span class="workflow-name">Multi-Agent Pipeline</span>
+          </div>
+          <span class="workflow-desc">All agents collaborate: Research → Plan → Implement → Review</span>
+          <span class="workflow-badge recommended">Recommended</span>
         </button>
-        <button
-          class="agent-btn codex"
-          class:selected={selectedAgent === 'codex'}
-          on:click={() => selectedAgent = 'codex'}
-        >
-          <span class="agent-icon">⚡</span>
-          Codex
-          <span class="agent-desc">Code & Implementation</span>
-        </button>
-        <button
-          class="agent-btn gemini"
-          class:selected={selectedAgent === 'gemini'}
-          on:click={() => selectedAgent = 'gemini'}
-        >
-          <span class="agent-icon">🔍</span>
-          Gemini
-          <span class="agent-desc">Research & Analysis</span>
-        </button>
+
+        <div class="workflow-divider">
+          <span>or run single agent</span>
+        </div>
+
+        <div class="single-agents">
+          <button
+            class="workflow-btn single claude"
+            class:selected={selectedWorkflow === 'claude'}
+            on:click={() => selectedWorkflow = 'claude'}
+          >
+            <span class="workflow-icon">🧠</span>
+            <span class="workflow-name">Claude</span>
+            <span class="workflow-desc">Planning & Synthesis</span>
+          </button>
+          <button
+            class="workflow-btn single codex"
+            class:selected={selectedWorkflow === 'codex'}
+            on:click={() => selectedWorkflow = 'codex'}
+          >
+            <span class="workflow-icon">⚡</span>
+            <span class="workflow-name">Codex</span>
+            <span class="workflow-desc">Code & Implementation</span>
+          </button>
+          <button
+            class="workflow-btn single gemini"
+            class:selected={selectedWorkflow === 'gemini'}
+            on:click={() => selectedWorkflow = 'gemini'}
+          >
+            <span class="workflow-icon">🔍</span>
+            <span class="workflow-name">Gemini</span>
+            <span class="workflow-desc">Research & Analysis</span>
+          </button>
+        </div>
       </div>
     </div>
-
-    <label class="checkbox-label">
-      <input type="checkbox" bind:checked={createWorktree} />
-      Create git worktree (isolated branch)
-    </label>
   </div>
 
   <svelte:fragment slot="footer">
-    <Button variant="secondary" on:click={() => showLaunchModal = false}>Cancel</Button>
-    <Button variant="primary" on:click={handleQuickRun} disabled={!selectedAgent || launching}>
-      {launching ? 'Running...' : `Run with ${selectedAgent || '...'}`}
+    <Button variant="secondary" on:click={() => showRunModal = false}>Cancel</Button>
+    <Button variant="primary" on:click={handleRun} disabled={!selectedWorkflow || launching}>
+      {launching ? 'Starting...' : 'Start Workflow'}
     </Button>
   </svelte:fragment>
 </Modal>
@@ -683,8 +660,7 @@
     gap: 8px;
   }
 
-  .launch-btn,
-  .pipeline-btn {
+  .run-btn {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -695,29 +671,19 @@
     cursor: pointer;
     font-size: 13px;
     font-weight: 500;
-  }
-
-  .launch-btn {
-    background: var(--accent-primary);
-  }
-
-  .pipeline-btn {
     background: linear-gradient(135deg, #6366f1, #8b5cf6);
   }
 
-  .launch-btn:hover,
-  .pipeline-btn:hover {
+  .run-btn:hover {
     opacity: 0.9;
   }
 
-  .launch-btn:disabled,
-  .pipeline-btn:disabled {
+  .run-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
 
-  .launch-btn svg,
-  .pipeline-btn svg {
+  .run-btn svg {
     width: 14px;
     height: 14px;
   }
@@ -795,30 +761,50 @@
     color: var(--text-secondary);
   }
 
-  /* Launch Modal Styles */
-  .launch-modal-content {
+  /* Run Modal Styles */
+  .run-modal-content {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 20px;
   }
 
-  .launch-summary {
+  .node-summary {
     background: var(--bg-primary);
     padding: 12px;
     border-radius: 6px;
     border: 1px solid var(--border-color);
   }
 
-  .launch-summary h4 {
-    margin: 0 0 8px;
+  .node-summary h4 {
+    margin: 0;
     font-size: 16px;
     color: var(--text-primary);
   }
 
-  .launch-field {
+  .deliverables-preview {
+    margin-top: 8px;
+  }
+
+  .deliverable-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .deliverable-tag {
+    font-size: 12px;
+    padding: 4px 8px;
+    background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
+    color: var(--accent-primary);
+    border-radius: 4px;
+    font-weight: 500;
+  }
+
+  .workflow-section {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 8px;
   }
 
   .field-label {
@@ -827,39 +813,129 @@
     text-transform: uppercase;
   }
 
-  .field-value {
-    margin: 0;
-    font-size: 13px;
-    color: var(--text-primary);
-    line-height: 1.4;
+  .workflow-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
   }
 
-  .launch-modal-content select {
-    width: 100%;
-    padding: 8px 12px;
+  .workflow-btn {
+    display: flex;
+    flex-direction: column;
+    padding: 12px;
     background: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    font-size: 14px;
+    border: 2px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-align: left;
   }
 
-  .launch-modal-content select:focus {
-    outline: none;
+  .workflow-btn:hover {
+    border-color: var(--text-secondary);
+  }
+
+  .workflow-btn.selected {
     border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
   }
 
-  .checkbox-label {
+  .workflow-btn.pipeline.selected {
+    border-color: #8b5cf6;
+    background: color-mix(in srgb, #8b5cf6 10%, transparent);
+  }
+
+  .workflow-header {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
-    color: var(--text-secondary);
-    cursor: pointer;
   }
 
-  .checkbox-label input {
-    margin: 0;
+  .workflow-icon {
+    font-size: 20px;
+  }
+
+  .workflow-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .workflow-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+
+  .workflow-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-top: 8px;
+    width: fit-content;
+  }
+
+  .workflow-badge.recommended {
+    background: color-mix(in srgb, #22c55e 20%, transparent);
+    color: #22c55e;
+  }
+
+  .workflow-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .workflow-divider::before,
+  .workflow-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border-color);
+  }
+
+  .single-agents {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .workflow-btn.single {
+    align-items: center;
+    text-align: center;
+    padding: 12px 8px;
+  }
+
+  .workflow-btn.single .workflow-icon {
+    font-size: 24px;
+  }
+
+  .workflow-btn.single .workflow-name {
+    font-size: 13px;
+  }
+
+  .workflow-btn.single .workflow-desc {
+    font-size: 10px;
+    margin-top: 2px;
+  }
+
+  .workflow-btn.single.claude.selected {
+    border-color: #f97316;
+    background: color-mix(in srgb, #f97316 10%, transparent);
+  }
+
+  .workflow-btn.single.codex.selected {
+    border-color: #22c55e;
+    background: color-mix(in srgb, #22c55e 10%, transparent);
+  }
+
+  .workflow-btn.single.gemini.selected {
+    border-color: #3b82f6;
+    background: color-mix(in srgb, #3b82f6 10%, transparent);
   }
 
   /* Feedback / Human Review Section */
@@ -1100,65 +1176,4 @@
     margin: 0;
   }
 
-  /* Agent Selection Buttons */
-  .agent-buttons {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    margin-top: 8px;
-  }
-
-  .agent-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 12px 8px;
-    background: var(--bg-primary);
-    border: 2px solid var(--border-color);
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .agent-btn:hover {
-    border-color: var(--text-secondary);
-  }
-
-  .agent-btn.selected {
-    border-color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
-  }
-
-  .agent-btn.claude.selected {
-    border-color: #f97316;
-    background: color-mix(in srgb, #f97316 10%, transparent);
-  }
-
-  .agent-btn.codex.selected {
-    border-color: #22c55e;
-    background: color-mix(in srgb, #22c55e 10%, transparent);
-  }
-
-  .agent-btn.gemini.selected {
-    border-color: #3b82f6;
-    background: color-mix(in srgb, #3b82f6 10%, transparent);
-  }
-
-  .agent-icon {
-    font-size: 24px;
-    margin-bottom: 4px;
-  }
-
-  .agent-btn span:not(.agent-icon):not(.agent-desc) {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .agent-desc {
-    font-size: 10px;
-    color: var(--text-secondary);
-    margin-top: 2px;
-    text-align: center;
-  }
 </style>
