@@ -9,17 +9,26 @@
 
   const VM_HOST = '159.65.109.198'
 
-  const AGENT_COLORS = {
-    claude: '#f97316',
-    codex: '#22c55e',
-    gemini: '#3b82f6'
-  }
-
   const STATUS_COLORS = {
     pending: '#666',
+    blocked: '#9333ea',
     running: '#eab308',
+    validating: '#3b82f6',
+    green: '#22c55e',
+    red: '#dc2626',
     done: '#22c55e',
     error: '#dc2626'
+  }
+
+  const STATUS_ICONS = {
+    pending: '○',
+    blocked: '◌',
+    running: '◐',
+    validating: '◑',
+    green: '●',
+    red: '✕',
+    done: '✓',
+    error: '✕'
   }
 
   onMount(() => {
@@ -37,7 +46,7 @@
     loading = false
 
     // Stop polling when done
-    if (run.status !== 'running' && pollInterval) {
+    if (!['running', 'validating'].includes(run.status) && pollInterval) {
       clearInterval(pollInterval)
       pollInterval = null
     }
@@ -51,12 +60,33 @@
     navigator.clipboard.writeText(text)
   }
 
-  function getArtifactIcon(type) {
+  function getDeliverableIcon(type) {
     switch (type) {
       case 'pr': return '⬡'
       case 'github': return '◐'
       case 'file': return '◫'
       default: return '◇'
+    }
+  }
+
+  function getConditionIcon(result) {
+    if (result.pending) return '⏳'
+    return result.passed ? '✓' : '✕'
+  }
+
+  function getConditionColor(result) {
+    if (result.pending) return '#eab308'
+    return result.passed ? '#22c55e' : '#dc2626'
+  }
+
+  async function submitReview(reviewId, action) {
+    const res = await fetch(`/reviews/${reviewId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    })
+    if (res.ok) {
+      await loadRun()
     }
   }
 </script>
@@ -67,56 +97,85 @@
   <div class="results">
     <div class="header">
       <h2>Run #{run.id}</h2>
-      <span class="status" style="background: {STATUS_COLORS[run.status]}">{run.status}</span>
+      <span class="status" style="background: {STATUS_COLORS[run.status]}">
+        {STATUS_ICONS[run.status]} {run.status}
+      </span>
     </div>
 
     {#if run.error}
       <div class="run-error">{run.error}</div>
     {/if}
 
-    <div class="node-runs">
-      {#each run.node_runs as nr}
-        <div class="node-run" class:current={nr.status === 'running'}>
-          <div class="node-header">
-            <span class="agent" style="background: {AGENT_COLORS[nr.agent_type]}">{nr.agent_type}</span>
-            <span class="title">{nr.node_title}</span>
-            <span class="node-status" style="color: {STATUS_COLORS[nr.status]}">{nr.status}</span>
+    <div class="block-runs">
+      {#each run.block_runs || run.node_runs as br}
+        <div class="block-run" class:current={br.status === 'running'}>
+          <div class="block-header">
+            <span class="status-icon" style="color: {STATUS_COLORS[br.status]}">
+              {STATUS_ICONS[br.status]}
+            </span>
+            <span class="title">{br.block_title || br.node_title}</span>
+            <span class="block-status" style="color: {STATUS_COLORS[br.status]}">{br.status}</span>
           </div>
 
-          {#if nr.status === 'running' && nr.tmux_session}
-            <div class="tmux-link">
-              <span class="label">Terminal:</span>
-              <code>{getTmuxCommand(nr.tmux_session)}</code>
-              <button on:click={() => copyToClipboard(getTmuxCommand(nr.tmux_session))}>Copy</button>
+          <!-- Terminal link for running blocks -->
+          {#if br.status === 'running' && br.tmux_session}
+            <div class="tmux-links">
+              <div class="tmux-link">
+                <code>{getTmuxCommand(br.tmux_session)}</code>
+                <button on:click={() => copyToClipboard(getTmuxCommand(br.tmux_session))}>Copy</button>
+              </div>
             </div>
           {/if}
 
-          {#if nr.artifacts && nr.artifacts.length > 0}
-            <div class="artifacts">
-              {#each nr.artifacts as artifact}
+          <!-- Win Conditions -->
+          {#if br.condition_results?.length > 0}
+            <div class="conditions">
+              <div class="conditions-header">Win Conditions:</div>
+              {#each br.condition_results as cond}
+                <div class="condition" style="border-color: {getConditionColor(cond)}">
+                  <span class="cond-icon" style="color: {getConditionColor(cond)}">{getConditionIcon(cond)}</span>
+                  <span class="cond-type">{cond.type}</span>
+                  <span class="cond-details">{cond.details || ''}</span>
+
+                  {#if cond.type === 'human' && cond.pending && br.pending_review}
+                    <div class="review-actions">
+                      <button class="approve-btn" on:click={() => submitReview(br.pending_review, 'approve')}>Approve</button>
+                      <button class="reject-btn" on:click={() => submitReview(br.pending_review, 'reject')}>Reject</button>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          <!-- Deliverables -->
+          {#if br.deliverables?.length > 0}
+            <div class="deliverables">
+              {#each br.deliverables as d}
                 <a
-                  href={artifact.url || '#'}
+                  href={d.url || '#'}
                   target="_blank"
                   rel="noopener"
-                  class="artifact"
-                  class:file={artifact.type === 'file'}
+                  class="deliverable"
+                  class:file={d.type === 'file'}
                 >
-                  <span class="icon">{getArtifactIcon(artifact.type)}</span>
-                  {artifact.url || artifact.path}
+                  <span class="icon">{getDeliverableIcon(d.type)}</span>
+                  {d.url || d.path}
                 </a>
               {/each}
             </div>
           {/if}
 
-          {#if nr.output}
+          <!-- Output -->
+          {#if br.output}
             <details class="output">
               <summary>Output</summary>
-              <pre>{nr.output}</pre>
+              <pre>{br.output}</pre>
             </details>
           {/if}
 
-          {#if nr.error}
-            <div class="node-error">{nr.error}</div>
+          {#if br.error}
+            <div class="block-error">{br.error}</div>
           {/if}
         </div>
       {/each}
@@ -152,6 +211,9 @@
   }
 
   .status {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
     padding: 0.25rem 0.75rem;
     border-radius: 999px;
     font-size: 0.75rem;
@@ -169,25 +231,25 @@
     color: #ef4444;
   }
 
-  .node-runs {
+  .block-runs {
     display: flex;
     flex-direction: column;
     gap: 1rem;
   }
 
-  .node-run {
+  .block-run {
     background: #111;
     border: 1px solid #222;
     border-radius: 8px;
     overflow: hidden;
   }
 
-  .node-run.current {
+  .block-run.current {
     border-color: #eab308;
     box-shadow: 0 0 20px rgba(234, 179, 8, 0.1);
   }
 
-  .node-header {
+  .block-header {
     display: flex;
     align-items: center;
     gap: 0.75rem;
@@ -196,13 +258,8 @@
     border-bottom: 1px solid #222;
   }
 
-  .agent {
-    font-size: 0.625rem;
-    padding: 0.125rem 0.5rem;
-    border-radius: 4px;
-    color: #000;
-    font-weight: 600;
-    text-transform: uppercase;
+  .status-icon {
+    font-size: 1rem;
   }
 
   .title {
@@ -210,29 +267,27 @@
     font-weight: 500;
   }
 
-  .node-status {
+  .block-status {
     font-size: 0.75rem;
     font-weight: 600;
     text-transform: uppercase;
+  }
+
+  .tmux-links {
+    border-bottom: 1px solid #222;
   }
 
   .tmux-link {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.75rem 1rem;
+    padding: 0.5rem 1rem;
     background: #1a1a1a;
-    border-bottom: 1px solid #222;
-  }
-
-  .tmux-link .label {
-    color: #888;
-    font-size: 0.875rem;
   }
 
   .tmux-link code {
     flex: 1;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     color: #22c55e;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -245,7 +300,7 @@
     border: none;
     border-radius: 4px;
     color: #fff;
-    font-size: 0.75rem;
+    font-size: 0.625rem;
     cursor: pointer;
   }
 
@@ -253,7 +308,89 @@
     background: #3b82f6;
   }
 
-  .artifacts {
+  .conditions {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid #222;
+    background: #0d0d0d;
+  }
+
+  .conditions-header {
+    font-size: 0.75rem;
+    color: #666;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+  }
+
+  .condition {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: #111;
+    border-left: 2px solid;
+    border-radius: 4px;
+    margin-bottom: 0.375rem;
+  }
+
+  .cond-icon {
+    font-size: 0.875rem;
+    font-weight: bold;
+  }
+
+  .cond-type {
+    font-size: 0.625rem;
+    padding: 0.125rem 0.375rem;
+    background: #222;
+    border-radius: 4px;
+    color: #888;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .cond-details {
+    flex: 1;
+    font-size: 0.75rem;
+    color: #999;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .review-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+  }
+
+  .approve-btn, .reject-btn {
+    padding: 0.375rem 0.75rem;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .approve-btn {
+    background: #22c55e;
+    color: #000;
+  }
+
+  .approve-btn:hover {
+    background: #16a34a;
+  }
+
+  .reject-btn {
+    background: #dc2626;
+    color: #fff;
+  }
+
+  .reject-btn:hover {
+    background: #b91c1c;
+  }
+
+  .deliverables {
     padding: 0.75rem 1rem;
     display: flex;
     flex-wrap: wrap;
@@ -261,7 +398,7 @@
     border-bottom: 1px solid #222;
   }
 
-  .artifact {
+  .deliverable {
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
@@ -277,15 +414,15 @@
     white-space: nowrap;
   }
 
-  .artifact:hover {
+  .deliverable:hover {
     background: #222;
   }
 
-  .artifact.file {
+  .deliverable.file {
     color: #a78bfa;
   }
 
-  .artifact .icon {
+  .deliverable .icon {
     font-size: 0.875rem;
   }
 
@@ -315,7 +452,7 @@
     word-break: break-word;
   }
 
-  .node-error {
+  .block-error {
     padding: 0.75rem 1rem;
     color: #ef4444;
     font-size: 0.875rem;

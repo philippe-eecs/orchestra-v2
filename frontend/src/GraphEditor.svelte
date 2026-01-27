@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher, onMount } from 'svelte'
   import ContextPool from './ContextPool.svelte'
-  import NodeEditor from './NodeEditor.svelte'
+  import BlockEditor from './BlockEditor.svelte'
 
   export let graphId
 
@@ -9,25 +9,20 @@
 
   let graph = null
   let loading = true
-  let selectedNode = null
-  let creatingEdge = null  // node id we're drawing from
+  let selectedBlock = null
+  let creatingEdge = null
   let showContextPool = true
 
-  // Form state (deprecated - now using modal)
-  let newTitle = ''
-  let newPrompt = ''
-  let newAgent = 'claude'
-
-  // Node editor modal
-  let showNodeEditor = false
-  let editingNode = null  // null for new, node object for editing
+  // Block editor modal
+  let showBlockEditor = false
+  let editingBlock = null
 
   // Drag state
   let dragging = null
   let dragOffset = { x: 0, y: 0 }
 
   // Context drag state
-  let dragOverNode = null
+  let dragOverBlock = null
 
   const AGENT_COLORS = {
     claude: '#f97316',
@@ -46,42 +41,26 @@
     loading = false
   }
 
-  async function createNode() {
-    if (!newTitle.trim() || !newPrompt.trim()) return
-
-    // Position new node
-    const pos_x = 100 + (graph.nodes.length % 3) * 200
-    const pos_y = 100 + Math.floor(graph.nodes.length / 3) * 150
-
-    const res = await fetch(`/graphs/${graphId}/nodes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: newTitle.trim(),
-        prompt: newPrompt.trim(),
-        agent_type: newAgent,
-        pos_x, pos_y
-      })
-    })
-
-    const node = await res.json()
-    graph.nodes = [...graph.nodes, node]
-
-    newTitle = ''
-    newPrompt = ''
-    selectedNode = node
+  function getBlockAgentTypes(block) {
+    const agents = block.agents || []
+    if (agents.length === 0) return ['claude']
+    return [...new Set(agents.map(a => a.agent_type))]
   }
 
-  async function deleteNode(id) {
-    await fetch(`/nodes/${id}`, { method: 'DELETE' })
-    graph.nodes = graph.nodes.filter(n => n.id !== id)
+  function getBlockPrimaryColor(block) {
+    const types = getBlockAgentTypes(block)
+    return AGENT_COLORS[types[0]] || '#666'
+  }
+
+  async function deleteBlock(id) {
+    await fetch(`/blocks/${id}`, { method: 'DELETE' })
+    graph.blocks = graph.blocks.filter(b => b.id !== id)
     graph.edges = graph.edges.filter(e => e.parent_id !== id && e.child_id !== id)
-    if (selectedNode?.id === id) selectedNode = null
+    if (selectedBlock?.id === id) selectedBlock = null
   }
 
   async function createEdge(parentId, childId) {
     if (parentId === childId) return
-    // Check if edge already exists
     if (graph.edges.some(e => e.parent_id === parentId && e.child_id === childId)) return
 
     const res = await fetch(`/graphs/${graphId}/edges`, {
@@ -99,34 +78,34 @@
     graph.edges = graph.edges.filter(e => e.id !== id)
   }
 
-  async function updateNodePosition(node) {
-    await fetch(`/nodes/${node.id}`, {
+  async function updateBlockPosition(block) {
+    await fetch(`/blocks/${block.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pos_x: node.pos_x, pos_y: node.pos_y })
+      body: JSON.stringify({ pos_x: block.pos_x, pos_y: block.pos_y })
     })
   }
 
-  function handleNodeClick(node, e) {
+  function handleBlockClick(block, e) {
     e.stopPropagation()
     if (creatingEdge) {
-      createEdge(creatingEdge, node.id)
+      createEdge(creatingEdge, block.id)
       creatingEdge = null
     } else {
-      selectedNode = node
+      selectedBlock = block
     }
   }
 
-  function startEdge(node, e) {
+  function startEdge(block, e) {
     e.stopPropagation()
-    creatingEdge = node.id
+    creatingEdge = block.id
   }
 
-  function handleMouseDown(node, e) {
-    dragging = node
+  function handleMouseDown(block, e) {
+    dragging = block
     dragOffset = {
-      x: e.clientX - node.pos_x,
-      y: e.clientY - node.pos_y
+      x: e.clientX - block.pos_x,
+      y: e.clientY - block.pos_y
     }
   }
 
@@ -134,19 +113,19 @@
     if (!dragging) return
     dragging.pos_x = e.clientX - dragOffset.x
     dragging.pos_y = e.clientY - dragOffset.y
-    graph.nodes = graph.nodes  // trigger reactivity
+    graph.blocks = graph.blocks
   }
 
   function handleMouseUp() {
     if (dragging) {
-      updateNodePosition(dragging)
+      updateBlockPosition(dragging)
       dragging = null
     }
   }
 
   function handleCanvasClick() {
     creatingEdge = null
-    selectedNode = null
+    selectedBlock = null
   }
 
   async function runGraph() {
@@ -200,129 +179,129 @@
 
   function handleContextDelete(e) {
     graph.context_items = (graph.context_items || []).filter(c => c.id !== e.detail)
-    // Update node context counts
-    graph.nodes = graph.nodes.map(n => ({...n, context_count: n.context_count}))
   }
 
   async function handleContextRefresh() {
     await loadGraph()
   }
 
-  function handleNodeDragOver(e, node) {
+  function handleBlockDragOver(e, block) {
     const data = e.dataTransfer.types.includes('application/json')
     if (data) {
       e.preventDefault()
-      dragOverNode = node.id
+      dragOverBlock = block.id
     }
   }
 
-  function handleNodeDragLeave(e) {
-    dragOverNode = null
+  function handleBlockDragLeave(e) {
+    dragOverBlock = null
   }
 
-  async function handleNodeDrop(e, node) {
+  async function handleBlockDrop(e, block) {
     e.preventDefault()
-    dragOverNode = null
+    dragOverBlock = null
 
     try {
       const data = JSON.parse(e.dataTransfer.getData('application/json'))
       if (data.type === 'context') {
-        await attachContext(node.id, data.id)
+        await attachContext(block.id, data.id)
       }
     } catch {}
   }
 
-  async function attachContext(nodeId, contextId) {
-    const res = await fetch(`/nodes/${nodeId}/context`, {
+  async function attachContext(blockId, contextId) {
+    const res = await fetch(`/blocks/${blockId}/context`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ context_item_id: contextId })
     })
 
     if (res.ok) {
-      // Update node context count
-      graph.nodes = graph.nodes.map(n =>
-        n.id === nodeId ? {...n, context_count: (n.context_count || 0) + 1} : n
+      graph.blocks = graph.blocks.map(b =>
+        b.id === blockId ? {...b, context_count: (b.context_count || 0) + 1} : b
       )
     }
   }
 
-  async function detachContext(nodeId, contextId) {
-    const res = await fetch(`/nodes/${nodeId}/context/${contextId}`, { method: 'DELETE' })
+  async function detachContext(blockId, contextId) {
+    const res = await fetch(`/blocks/${blockId}/context/${contextId}`, { method: 'DELETE' })
     if (res.ok) {
-      graph.nodes = graph.nodes.map(n =>
-        n.id === nodeId ? {...n, context_count: Math.max(0, (n.context_count || 1) - 1)} : n
+      graph.blocks = graph.blocks.map(b =>
+        b.id === blockId ? {...b, context_count: Math.max(0, (b.context_count || 1) - 1)} : b
       )
-      if (selectedNode?.id === nodeId) {
-        await loadNodeContexts()
+      if (selectedBlock?.id === blockId) {
+        await loadBlockContexts()
       }
     }
   }
 
-  let selectedNodeContexts = []
+  let selectedBlockContexts = []
 
-  async function loadNodeContexts() {
-    if (!selectedNode) {
-      selectedNodeContexts = []
+  async function loadBlockContexts() {
+    if (!selectedBlock) {
+      selectedBlockContexts = []
       return
     }
-    const res = await fetch(`/nodes/${selectedNode.id}/context`)
+    const res = await fetch(`/blocks/${selectedBlock.id}/context`)
     if (res.ok) {
-      selectedNodeContexts = await res.json()
+      selectedBlockContexts = await res.json()
     }
   }
 
-  $: if (selectedNode) loadNodeContexts()
+  $: if (selectedBlock) loadBlockContexts()
 
-  // Node editor handlers
-  function openNewNodeEditor() {
-    editingNode = null
-    showNodeEditor = true
+  // Block editor handlers
+  function openNewBlockEditor() {
+    editingBlock = null
+    showBlockEditor = true
   }
 
-  function openEditNodeEditor(node) {
-    editingNode = node
-    showNodeEditor = true
+  function openEditBlockEditor(block) {
+    editingBlock = block
+    showBlockEditor = true
   }
 
-  function handleNodeEditorSave(e) {
-    const savedNode = e.detail
-    if (editingNode) {
-      // Update existing node in list
-      graph.nodes = graph.nodes.map(n => n.id === savedNode.id ? savedNode : n)
-      selectedNode = savedNode
+  function handleBlockEditorSave(e) {
+    const savedBlock = e.detail
+    if (editingBlock) {
+      graph.blocks = graph.blocks.map(b => b.id === savedBlock.id ? savedBlock : b)
+      selectedBlock = savedBlock
     } else {
-      // Add new node to list
-      graph.nodes = [...graph.nodes, savedNode]
-      selectedNode = savedNode
+      graph.blocks = [...graph.blocks, savedBlock]
+      selectedBlock = savedBlock
     }
-    showNodeEditor = false
-    editingNode = null
+    showBlockEditor = false
+    editingBlock = null
   }
 
-  function handleNodeEditorCancel() {
-    showNodeEditor = false
-    editingNode = null
+  function handleBlockEditorCancel() {
+    showBlockEditor = false
+    editingBlock = null
   }
 
-  function handleNodeDoubleClick(node, e) {
+  function handleBlockDoubleClick(block, e) {
     e.stopPropagation()
-    openEditNodeEditor(node)
+    openEditBlockEditor(block)
   }
 
   function getEdgePath(edge) {
-    const parent = graph.nodes.find(n => n.id === edge.parent_id)
-    const child = graph.nodes.find(n => n.id === edge.child_id)
+    const parent = graph.blocks.find(b => b.id === edge.parent_id)
+    const child = graph.blocks.find(b => b.id === edge.child_id)
     if (!parent || !child) return ''
 
-    const x1 = parent.pos_x + 80
-    const y1 = parent.pos_y + 25
-    const x2 = child.pos_x + 80
-    const y2 = child.pos_y + 25
+    const x1 = parent.pos_x + 90
+    const y1 = parent.pos_y + 30
+    const x2 = child.pos_x + 90
+    const y2 = child.pos_y + 30
 
-    // Bezier curve
     const cx = (x1 + x2) / 2
     return `M ${x1} ${y1} Q ${cx} ${y1}, ${cx} ${(y1+y2)/2} Q ${cx} ${y2}, ${x2} ${y2}`
+  }
+
+  function getConditionSummary(block) {
+    const conditions = block.win_conditions || []
+    if (conditions.length === 0) return null
+    return conditions.map(c => c.type[0].toUpperCase()).join('')
   }
 </script>
 
@@ -366,64 +345,105 @@
         {/each}
       </svg>
 
-      {#each graph.nodes as node}
+      {#each graph.blocks as block}
         <div
-          class="node"
-          class:selected={selectedNode?.id === node.id}
-          class:edge-source={creatingEdge === node.id}
-          class:drag-over={dragOverNode === node.id}
-          style="left: {node.pos_x}px; top: {node.pos_y}px; border-color: {AGENT_COLORS[node.agent_type]}"
-          on:click={(e) => handleNodeClick(node, e)}
-          on:dblclick={(e) => handleNodeDoubleClick(node, e)}
-          on:mousedown={(e) => handleMouseDown(node, e)}
-          on:dragover={(e) => handleNodeDragOver(e, node)}
-          on:dragleave={handleNodeDragLeave}
-          on:drop={(e) => handleNodeDrop(e, node)}
+          class="block"
+          class:selected={selectedBlock?.id === block.id}
+          class:edge-source={creatingEdge === block.id}
+          class:drag-over={dragOverBlock === block.id}
+          style="left: {block.pos_x}px; top: {block.pos_y}px; border-color: {getBlockPrimaryColor(block)}"
+          on:click={(e) => handleBlockClick(block, e)}
+          on:dblclick={(e) => handleBlockDoubleClick(block, e)}
+          on:mousedown={(e) => handleMouseDown(block, e)}
+          on:dragover={(e) => handleBlockDragOver(e, block)}
+          on:dragleave={handleBlockDragLeave}
+          on:drop={(e) => handleBlockDrop(e, block)}
         >
-          <div class="node-header">
-            <span class="agent-badge" style="background: {AGENT_COLORS[node.agent_type]}">{node.agent_type}</span>
-            <span class="title">{node.title}</span>
-            {#if node.context_count > 0}
-              <span class="context-badge" title="{node.context_count} contexts attached">{node.context_count}</span>
-            {/if}
+          <div class="block-header">
+            <div class="agent-badges">
+              {#each getBlockAgentTypes(block) as agentType}
+                <span class="agent-badge" style="background: {AGENT_COLORS[agentType]}">{agentType}</span>
+              {/each}
+              {#if (block.agents?.length || 0) > 1}
+                <span class="multi-badge">×{block.agents.length}</span>
+              {/if}
+            </div>
+            <span class="title">{block.title}</span>
+            <div class="badges">
+              {#if block.context_count > 0}
+                <span class="context-badge" title="{block.context_count} contexts">{block.context_count}</span>
+              {/if}
+              {#if getConditionSummary(block)}
+                <span class="condition-badge" title="Win conditions: {(block.win_conditions || []).map(c => c.type).join(', ')}">{getConditionSummary(block)}</span>
+              {/if}
+            </div>
           </div>
-          <button class="edge-btn" on:click={(e) => startEdge(node, e)} title="Draw edge">→</button>
+          <button class="edge-btn" on:click={(e) => startEdge(block, e)} title="Draw edge">→</button>
         </div>
       {/each}
 
       {#if creatingEdge}
-        <div class="edge-hint">Click another node to connect</div>
+        <div class="edge-hint">Click another block to connect</div>
       {/if}
     </div>
 
     <div class="sidebar">
       <div class="section">
-        <button class="add-node-btn" on:click={openNewNodeEditor}>
-          + Add Node
+        <button class="add-block-btn" on:click={openNewBlockEditor}>
+          + Add Block
         </button>
       </div>
 
-      {#if selectedNode}
+      {#if selectedBlock}
         <div class="section">
-          <h3>Selected: {selectedNode.title}</h3>
-          <p class="agent-type" style="color: {AGENT_COLORS[selectedNode.agent_type]}">{selectedNode.agent_type}</p>
-          <pre class="prompt">{selectedNode.prompt}</pre>
+          <h3>Selected: {selectedBlock.title}</h3>
 
-          {#if selectedNodeContexts.length > 0}
-            <div class="attached-contexts">
-              <p class="label">Attached Contexts:</p>
-              {#each selectedNodeContexts as ctx}
-                <div class="attached-context">
-                  <span class="ctx-name">{ctx.context_name}</span>
-                  <button class="remove-ctx" on:click={() => detachContext(selectedNode.id, ctx.context_item_id)}>×</button>
+          <div class="block-agents">
+            {#each (selectedBlock.agents || []) as agent}
+              <div class="agent-item">
+                <span class="agent-badge" style="background: {AGENT_COLORS[agent.agent_type]}">{agent.agent_type}</span>
+                <span class="role">{agent.role}</span>
+              </div>
+            {/each}
+          </div>
+
+          {#if selectedBlock.win_conditions?.length > 0}
+            <div class="block-conditions">
+              <p class="label">Win Conditions:</p>
+              {#each selectedBlock.win_conditions as cond}
+                <div class="cond-item">
+                  <span class="cond-type">{cond.type}</span>
+                  <span class="cond-info">
+                    {#if cond.type === 'test'}
+                      {cond.command}
+                    {:else if cond.type === 'human'}
+                      Human review
+                    {:else if cond.type === 'llm_judge'}
+                      {cond.agent} judge
+                    {:else if cond.type === 'metric'}
+                      {cond.comparison} {cond.threshold}
+                    {/if}
+                  </span>
                 </div>
               {/each}
             </div>
           {/if}
 
-          <div class="node-actions">
-            <button class="edit-btn" on:click={() => openEditNodeEditor(selectedNode)}>Edit</button>
-            <button class="danger" on:click={() => deleteNode(selectedNode.id)}>Delete</button>
+          {#if selectedBlockContexts.length > 0}
+            <div class="attached-contexts">
+              <p class="label">Attached Contexts:</p>
+              {#each selectedBlockContexts as ctx}
+                <div class="attached-context">
+                  <span class="ctx-name">{ctx.context_name}</span>
+                  <button class="remove-ctx" on:click={() => detachContext(selectedBlock.id, ctx.context_item_id)}>×</button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          <div class="block-actions">
+            <button class="edit-btn" on:click={() => openEditBlockEditor(selectedBlock)}>Edit</button>
+            <button class="danger" on:click={() => deleteBlock(selectedBlock.id)}>Delete</button>
           </div>
         </div>
       {/if}
@@ -445,20 +465,20 @@
       </div>
 
       <div class="section run-section">
-        <button class="run-btn" on:click={runGraph} disabled={graph.nodes.length === 0}>
+        <button class="run-btn" on:click={runGraph} disabled={graph.blocks.length === 0}>
           ▶ Run DAG
         </button>
       </div>
     </div>
   </div>
 
-  {#if showNodeEditor}
-    <NodeEditor
-      node={editingNode}
+  {#if showBlockEditor}
+    <BlockEditor
+      block={editingBlock}
       {graphId}
       contextItems={graph.context_items || []}
-      on:save={handleNodeEditorSave}
-      on:cancel={handleNodeEditorCancel}
+      on:save={handleBlockEditorSave}
+      on:cancel={handleBlockEditorCancel}
     />
   {/if}
 {/if}
@@ -530,9 +550,9 @@
     stroke-width: 3;
   }
 
-  .node {
+  .block {
     position: absolute;
-    width: 160px;
+    width: 180px;
     padding: 0.5rem;
     background: #111;
     border: 2px solid #333;
@@ -541,36 +561,50 @@
     user-select: none;
   }
 
-  .node:active {
+  .block:active {
     cursor: grabbing;
   }
 
-  .node.selected {
+  .block.selected {
     box-shadow: 0 0 0 2px #3b82f6;
   }
 
-  .node.edge-source {
+  .block.edge-source {
     box-shadow: 0 0 0 2px #22c55e;
   }
 
-  .node.drag-over {
+  .block.drag-over {
     box-shadow: 0 0 0 2px #8b5cf6;
     background: #1a1a2e;
   }
 
-  .node-header {
+  .block-header {
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .agent-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
   }
 
   .agent-badge {
-    font-size: 0.625rem;
+    font-size: 0.5rem;
     padding: 0.125rem 0.375rem;
     border-radius: 4px;
     color: #000;
     font-weight: 600;
     text-transform: uppercase;
+  }
+
+  .multi-badge {
+    font-size: 0.5rem;
+    padding: 0.125rem 0.25rem;
+    background: #333;
+    border-radius: 4px;
+    color: #888;
   }
 
   .title {
@@ -579,14 +613,27 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    flex: 1;
+  }
+
+  .badges {
+    display: flex;
+    gap: 0.25rem;
   }
 
   .context-badge {
-    font-size: 0.625rem;
+    font-size: 0.5rem;
     padding: 0.125rem 0.375rem;
     background: #8b5cf6;
     color: #fff;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+
+  .condition-badge {
+    font-size: 0.5rem;
+    padding: 0.125rem 0.375rem;
+    background: #22c55e;
+    color: #000;
     border-radius: 4px;
     font-weight: 600;
   }
@@ -646,48 +693,7 @@
     color: #999;
   }
 
-  .section input, .section textarea {
-    width: 100%;
-    padding: 0.5rem;
-    background: #0a0a0a;
-    border: 1px solid #333;
-    border-radius: 4px;
-    color: #fff;
-    font-size: 0.875rem;
-    margin-bottom: 0.5rem;
-    resize: none;
-  }
-
-  .section input:focus, .section textarea:focus {
-    outline: none;
-    border-color: #3b82f6;
-  }
-
-  .agent-select {
-    display: flex;
-    gap: 0.25rem;
-    margin-bottom: 0.75rem;
-  }
-
-  .agent-select button {
-    flex: 1;
-    padding: 0.375rem;
-    background: #0a0a0a;
-    border: 1px solid #333;
-    border-radius: 4px;
-    color: #888;
-    font-size: 0.75rem;
-    cursor: pointer;
-  }
-
-  .agent-select button.active {
-    background: var(--color);
-    color: #000;
-    border-color: var(--color);
-    font-weight: 600;
-  }
-
-  .add-node-btn {
+  .add-block-btn {
     width: 100%;
     padding: 0.75rem;
     background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
@@ -699,11 +705,70 @@
     cursor: pointer;
   }
 
-  .add-node-btn:hover {
+  .add-block-btn:hover {
     filter: brightness(1.1);
   }
 
-  .node-actions {
+  .block-agents {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .agent-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem;
+    background: #0a0a0a;
+    border-radius: 4px;
+  }
+
+  .agent-item .role {
+    font-size: 0.75rem;
+    color: #888;
+  }
+
+  .block-conditions {
+    margin-bottom: 0.75rem;
+  }
+
+  .block-conditions .label {
+    font-size: 0.75rem;
+    color: #666;
+    margin-bottom: 0.5rem;
+  }
+
+  .cond-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem;
+    background: #0a0a0a;
+    border-radius: 4px;
+    margin-bottom: 0.25rem;
+  }
+
+  .cond-type {
+    font-size: 0.625rem;
+    padding: 0.125rem 0.375rem;
+    background: #22c55e;
+    color: #000;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .cond-info {
+    font-size: 0.75rem;
+    color: #888;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .block-actions {
     display: flex;
     gap: 0.5rem;
   }
@@ -730,25 +795,6 @@
     border-radius: 4px;
     color: #fff;
     cursor: pointer;
-  }
-
-  .agent-type {
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    margin-bottom: 0.5rem;
-  }
-
-  .prompt {
-    font-size: 0.75rem;
-    background: #0a0a0a;
-    padding: 0.5rem;
-    border-radius: 4px;
-    margin-bottom: 0.75rem;
-    white-space: pre-wrap;
-    max-height: 150px;
-    overflow-y: auto;
-    color: #999;
   }
 
   .attached-contexts {
