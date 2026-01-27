@@ -129,7 +129,7 @@ class Deliverable(Base):
     type = Column(String)  # 'pr', 'file', 'url', 'artifact'
     url = Column(String)
     path = Column(String)
-    metadata = Column(JSON, default=dict)
+    extra = Column(JSON, default=dict)  # renamed from 'metadata' (reserved)
 
     block_run = relationship("BlockRun", back_populates="deliverables")
 

@@ -139,7 +139,7 @@ async def execute_block(block: Block, block_run: BlockRun, run_id: int, edges: l
             type=d.get("type"),
             url=d.get("url"),
             path=d.get("path"),
-            metadata=d
+            extra=d
         )
         db.add(deliv)
     db.commit()
