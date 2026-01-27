@@ -2,6 +2,7 @@
   import GraphList from './GraphList.svelte'
   import GraphEditor from './GraphEditor.svelte'
   import RunResults from './RunResults.svelte'
+  import AgentHub from './AgentHub.svelte'
 
   let route = { page: 'list', id: null }
 
@@ -41,6 +42,8 @@
   {:else if route.page === 'run'}
     <RunResults runId={route.id} />
   {/if}
+
+  <AgentHub />
 </main>
 
 <style>

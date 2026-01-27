@@ -9,7 +9,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from models import Node, Edge, Run, NodeRun
+from models import Node, Edge, Run, NodeRun, NodeContext, AgentSession
 
 VM_HOST = "root@159.65.109.198"
 
@@ -49,10 +49,13 @@ async def _run_graph_async(run_id: int):
             try:
                 # Get parent outputs
                 parent_ids = [e.parent_id for e in edges if e.child_id == node_id]
-                context = get_parent_outputs(db, run_id, parent_ids)
+                parent_context = get_parent_outputs(db, run_id, parent_ids)
+
+                # Get attached context items
+                node_contexts = db.query(NodeContext).filter(NodeContext.node_id == node_id).all()
 
                 # Build full prompt
-                full_prompt = build_prompt(node.prompt, context)
+                full_prompt = build_prompt(node.prompt, parent_context, node_contexts)
 
                 # Mark running
                 session_name = f"run-{run_id}-node-{node_id}"
@@ -62,7 +65,10 @@ async def _run_graph_async(run_id: int):
                 db.commit()
 
                 # Execute agent
-                output = await call_agent(node.agent_type, full_prompt, session_name)
+                output = await call_agent(
+                    node.agent_type, full_prompt, session_name,
+                    db=db, run_id=run_id, node_run_id=node_run.id, title=node.title
+                )
 
                 # Parse artifacts from output
                 artifacts = extract_artifacts(output)
@@ -131,39 +137,126 @@ def get_parent_outputs(db: Session, run_id: int, parent_ids: list[int]) -> str:
     return "\n\n---\n\n".join(outputs)
 
 
-def build_prompt(prompt: str, context: str) -> str:
-    if not context:
-        return prompt
-    return f"## Context from previous steps:\n\n{context}\n\n---\n\n## Your task:\n\n{prompt}"
+def build_prompt(prompt: str, parent_context: str, node_contexts: list = None) -> str:
+    """Build the full prompt with context injection."""
+    parts = []
+
+    # Add attached context items (prepend mode)
+    prepend_contexts = []
+    append_contexts = []
+
+    if node_contexts:
+        for nc in sorted(node_contexts, key=lambda x: x.order):
+            content = nc.context_item.processed_content
+            if not content:
+                continue
+
+            if nc.injection_mode == "prepend":
+                prepend_contexts.append(content)
+            elif nc.injection_mode == "append":
+                append_contexts.append(content)
+            elif nc.injection_mode == "replace_placeholder" and nc.placeholder:
+                prompt = prompt.replace(nc.placeholder, content)
+
+    # Build final prompt
+    if prepend_contexts:
+        parts.append("## Attached Context:\n\n" + "\n\n---\n\n".join(prepend_contexts))
+
+    if parent_context:
+        parts.append(f"## Context from previous steps:\n\n{parent_context}")
+
+    parts.append(f"## Your task:\n\n{prompt}")
+
+    if append_contexts:
+        parts.append("## Additional Context:\n\n" + "\n\n---\n\n".join(append_contexts))
+
+    return "\n\n---\n\n".join(parts)
 
 
-async def call_agent(agent_type: str, prompt: str, session_name: str) -> str:
-    """Run agent via CLI."""
+async def call_agent(agent_type: str, prompt: str, session_name: str, db=None, run_id: int = None, node_run_id: int = None, title: str = None) -> str:
+    """Run agent via CLI in a tmux session."""
     import base64
+    import tempfile
+    import os
 
-    # Encode prompt as base64 to avoid escaping issues
-    prompt_b64 = base64.b64encode(prompt.encode()).decode()
+    # Write prompt to a temp file to avoid shell escaping issues
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write(prompt)
+        prompt_file = f.name
 
     # Build agent command
     if agent_type == "claude":
-        cmd = f'echo "{prompt_b64}" | base64 -d | claude -p -'
+        agent_cmd = f'cat "{prompt_file}" | claude -p - ; rm "{prompt_file}"'
     elif agent_type == "codex":
-        cmd = f'codex exec "$(echo {prompt_b64} | base64 -d)" --full-auto'
+        agent_cmd = f'codex exec "$(cat {prompt_file})" --full-auto ; rm "{prompt_file}"'
     elif agent_type == "gemini":
-        cmd = f'echo "{prompt_b64}" | base64 -d | gemini -m gemini-2.5-pro --yolo'
+        agent_cmd = f'cat "{prompt_file}" | gemini -m gemini-2.5-pro --yolo ; rm "{prompt_file}"'
     else:
+        os.unlink(prompt_file)
         raise ValueError(f"Unknown agent: {agent_type}")
 
-    # Run directly (not in tmux for simplicity)
+    # Output file for capturing results
+    output_file = f"/tmp/{session_name}.out"
+
+    # Create tmux session and run command
+    # Kill any existing session with this name
+    await asyncio.create_subprocess_shell(f"tmux kill-session -t {session_name} 2>/dev/null")
+
+    # Create new session and run command, capturing output
+    tmux_cmd = f'tmux new-session -d -s {session_name} "({agent_cmd}) 2>&1 | tee {output_file}"'
+
     proc = await asyncio.create_subprocess_shell(
-        cmd,
+        tmux_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT
     )
+    await proc.communicate()
 
-    # Wait for completion
-    stdout, _ = await proc.communicate()
-    output = stdout.decode()
+    # Create AgentSession record if db provided
+    agent_session = None
+    if db and run_id and node_run_id:
+        agent_session = AgentSession(
+            run_id=run_id,
+            node_run_id=node_run_id,
+            tmux_session=session_name,
+            agent_type=agent_type,
+            title=title,
+            status="running",
+            started_at=datetime.utcnow().isoformat()
+        )
+        db.add(agent_session)
+        db.commit()
+        db.refresh(agent_session)
+
+    # Wait for tmux session to finish
+    while True:
+        # Check if session still exists
+        check = await asyncio.create_subprocess_shell(
+            f"tmux has-session -t {session_name} 2>/dev/null",
+            stdout=asyncio.subprocess.PIPE
+        )
+        await check.communicate()
+
+        if check.returncode != 0:
+            # Session ended
+            break
+
+        await asyncio.sleep(2)
+
+    # Read output
+    output = ""
+    try:
+        with open(output_file, 'r') as f:
+            output = f.read()
+        os.unlink(output_file)
+    except:
+        pass
+
+    # Update AgentSession status
+    if agent_session and db:
+        agent_session.status = "done"
+        agent_session.finished_at = datetime.utcnow().isoformat()
+        db.commit()
 
     return output
 
