@@ -72,7 +72,7 @@ Write queries to queries.md`,
     prompt: `Read queries.md for the search queries.
 Search the web for each query.
 Write findings to search-results.md`,
-    agent: { type: 'gemini', model: 'gemini-3-pro' },
+    agent: { type: 'gemini', model: 'gemini-1.5-pro' },
     context: [{ type: 'parent_output', nodeId: queryNodeId }],
     deliverables: [],
     checks: [],

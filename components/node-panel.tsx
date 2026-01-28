@@ -33,7 +33,16 @@ import {
   selectCurrentProject,
   selectCurrentProjectNode,
 } from '@/lib/store';
-import type { ContextRef, DeliverableInput, Check, CheckInput, AgentType, Node, Project } from '@/lib/types';
+import type {
+  ContextRef,
+  DeliverableInput,
+  Check,
+  CheckInput,
+  AgentType,
+  AgentConfig,
+  Node,
+  Project,
+} from '@/lib/types';
 
 const agentOptions = [
   { value: 'claude', label: 'Claude', description: 'Complex reasoning, planning' },
@@ -83,7 +92,23 @@ function NodeEditor({ node, project }: NodeEditorProps) {
   const [description, setDescription] = useState(node.description);
   const [prompt, setPrompt] = useState(node.prompt);
   const [agentType, setAgentType] = useState<AgentType>(node.agent.type);
-  const [agentModel, setAgentModel] = useState(node.agent.model || '');
+  const [claudeModel, setClaudeModel] = useState(
+    node.agent.type === 'claude' ? node.agent.model || '' : ''
+  );
+  const [claudeThinkingBudget, setClaudeThinkingBudget] = useState(
+    node.agent.type === 'claude' && node.agent.thinkingBudget
+      ? String(node.agent.thinkingBudget)
+      : ''
+  );
+  const [codexModel, setCodexModel] = useState(
+    node.agent.type === 'codex' ? node.agent.model || 'gpt-5.2-codex' : 'gpt-5.2-codex'
+  );
+  const [codexReasoning, setCodexReasoning] = useState<
+    'low' | 'medium' | 'high' | 'xhigh'
+  >(node.agent.type === 'codex' ? node.agent.reasoningEffort || 'xhigh' : 'xhigh');
+  const [geminiModel, setGeminiModel] = useState(
+    node.agent.type === 'gemini' ? node.agent.model || 'gemini-3-pro' : 'gemini-3-pro'
+  );
 
   // Context form state
   const [newContextType, setNewContextType] = useState<ContextRef['type']>('file');
@@ -98,14 +123,41 @@ function NodeEditor({ node, project }: NodeEditorProps) {
   const [newCheckValue, setNewCheckValue] = useState('');
   const [newCheckAutoRetry, setNewCheckAutoRetry] = useState(false);
 
+  const buildAgentConfig = useCallback(
+    (overrideType?: AgentType): AgentConfig => {
+      const type = overrideType ?? agentType;
+      switch (type) {
+        case 'claude': {
+          const budget = parseInt(claudeThinkingBudget, 10);
+          return {
+            type: 'claude',
+            model: claudeModel || undefined,
+            thinkingBudget: Number.isFinite(budget) ? budget : undefined,
+          };
+        }
+        case 'codex': {
+          return {
+            type: 'codex',
+            model: codexModel || undefined,
+            reasoningEffort: codexReasoning,
+          };
+        }
+        case 'gemini': {
+          return { type: 'gemini', model: geminiModel || undefined };
+        }
+      }
+    },
+    [agentType, claudeModel, claudeThinkingBudget, codexModel, codexReasoning, geminiModel]
+  );
+
   const handleSave = useCallback(() => {
     updateNode(project.id, node.id, {
       title,
       description,
       prompt,
-      agent: { type: agentType, model: agentModel || undefined },
+      agent: buildAgentConfig(),
     });
-  }, [project.id, node.id, title, description, prompt, agentType, agentModel, updateNode]);
+  }, [project.id, node.id, title, description, prompt, buildAgentConfig, updateNode]);
 
   const handleBlur = useCallback(() => {
     handleSave();
@@ -190,15 +242,21 @@ function NodeEditor({ node, project }: NodeEditorProps) {
     setAgentType(v);
     // Save immediately on agent type change
     updateNode(project.id, node.id, {
-      agent: { type: v, model: agentModel || undefined },
+      agent: buildAgentConfig(v),
     });
   };
 
-  const handleAgentModelChange = (v: string) => {
-    setAgentModel(v);
-    // Save immediately on model change
+  const handleCodexReasoningChange = (v: 'low' | 'medium' | 'high' | 'xhigh') => {
+    setCodexReasoning(v);
     updateNode(project.id, node.id, {
-      agent: { type: agentType, model: v || undefined },
+      agent: { type: 'codex', model: codexModel || undefined, reasoningEffort: v },
+    });
+  };
+
+  const handleGeminiModelChange = (v: string) => {
+    setGeminiModel(v);
+    updateNode(project.id, node.id, {
+      agent: { type: 'gemini', model: v || undefined },
     });
   };
 
@@ -270,16 +328,70 @@ function NodeEditor({ node, project }: NodeEditorProps) {
             {agentType === 'gemini' && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">Model</label>
-                <Select value={agentModel || 'gemini-3-pro'} onValueChange={handleAgentModelChange}>
+                <Select value={geminiModel || 'gemini-3-pro'} onValueChange={handleGeminiModelChange}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="gemini-3-pro">Gemini 3 Pro</SelectItem>
                     <SelectItem value="gemini-3-flash">Gemini 3 Flash</SelectItem>
+                    <SelectItem value="gemini-1.5-pro">Gemini 1.5 Pro</SelectItem>
+                    <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+            )}
+
+            {agentType === 'claude' && (
+              <>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Model (optional)</label>
+                  <Input
+                    value={claudeModel}
+                    onChange={(e) => setClaudeModel(e.target.value)}
+                    onBlur={handleBlur}
+                    placeholder="sonnet / opus / claude-sonnet-4-5-20250929"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Thinking Budget</label>
+                  <Input
+                    type="number"
+                    value={claudeThinkingBudget}
+                    onChange={(e) => setClaudeThinkingBudget(e.target.value)}
+                    onBlur={handleBlur}
+                    placeholder="10000"
+                  />
+                </div>
+              </>
+            )}
+
+            {agentType === 'codex' && (
+              <>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Model</label>
+                  <Input
+                    value={codexModel}
+                    onChange={(e) => setCodexModel(e.target.value)}
+                    onBlur={handleBlur}
+                    placeholder="gpt-5.2-codex"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Reasoning Effort</label>
+                  <Select value={codexReasoning} onValueChange={handleCodexReasoningChange}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="xhigh">XHigh</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
             )}
 
             <Separator />

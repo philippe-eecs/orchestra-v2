@@ -225,15 +225,22 @@ export async function runAllChecks(
   node: Node,
   sessionId: string,
   projectLocation?: string
-): Promise<{ allPassed: boolean; needsHumanApproval: boolean; failedChecks: string[] }> {
+): Promise<{
+  allPassed: boolean;
+  needsHumanApproval: boolean;
+  needsRetry: boolean;
+  failedChecks: string[];
+}> {
   const store = useOrchestraStore.getState();
   let allPassed = true;
   let needsHumanApproval = false;
+  let needsRetry = false;
   const failedChecks: string[] = [];
 
   for (const check of node.checks) {
     if (check.type === 'human_approval') {
       needsHumanApproval = true;
+      allPassed = false;
       store.setCheckResult(sessionId, check.id, 'pending');
       continue;
     }
@@ -243,6 +250,7 @@ export async function runAllChecks(
     if (result.passed) {
       store.setCheckResult(sessionId, check.id, 'passed');
     } else {
+      allPassed = false;
       // Check if we should retry
       if (check.autoRetry) {
         const maxRetries = check.maxRetries ?? 3;
@@ -251,21 +259,20 @@ export async function runAllChecks(
         if (attempts < maxRetries) {
           // Don't mark as failed yet, will retry
           store.setCheckResult(sessionId, check.id, 'pending');
+          needsRetry = true;
           failedChecks.push(check.id);
         } else {
           store.setCheckResult(sessionId, check.id, 'failed');
-          allPassed = false;
           failedChecks.push(check.id);
         }
       } else {
         store.setCheckResult(sessionId, check.id, 'failed');
-        allPassed = false;
         failedChecks.push(check.id);
       }
     }
   }
 
-  return { allPassed, needsHumanApproval, failedChecks };
+  return { allPassed, needsHumanApproval, needsRetry, failedChecks };
 }
 
 // ========== DAG UTILITIES ==========
@@ -321,7 +328,12 @@ export function getReadyNodesProject(project: Project, completedNodeIds: Set<str
 
   return nodes.filter((node) => {
     // Skip if already completed or running
-    if (completedNodeIds.has(node.id) || node.status === 'running' || node.status === 'completed') {
+    if (
+      completedNodeIds.has(node.id) ||
+      node.status === 'running' ||
+      node.status === 'completed' ||
+      node.status === 'failed'
+    ) {
       return false;
     }
 
@@ -347,9 +359,13 @@ export function getParentOutputs(
     if (!sourceNode) continue;
 
     // Find the most recent successful run for this node
-    const run = Object.values(nodeRuns).find(
-      (r) => r.nodeId === sourceNode.id && r.status === 'completed'
-    );
+    const run = Object.values(nodeRuns).reduce<NodeRun | null>((latest, current) => {
+      if (current.nodeId !== sourceNode.id || current.status !== 'completed') return latest;
+      if (!latest) return current;
+      const latestTime = latest.completedAt ?? latest.startedAt;
+      const currentTime = current.completedAt ?? current.startedAt;
+      return currentTime > latestTime ? current : latest;
+    }, null);
 
     if (run?.output) {
       // If edge specifies a specific deliverable, only include that
@@ -452,6 +468,12 @@ export async function executeNodeNew(
       return;
     }
 
+    if (checkResults.needsRetry) {
+      store.setSessionStatus(sessionId, 'failed');
+      store.setNodeStatus(project.id, node.id, 'pending');
+      return;
+    }
+
     if (checkResults.allPassed) {
       store.setSessionStatus(sessionId, 'completed');
       store.setNodeStatus(project.id, node.id, 'completed');
@@ -482,25 +504,25 @@ export async function executeNodeNew(
  * Approve a human approval check
  */
 export function approveHumanCheck(sessionId: string, checkId: string): void {
-  const store = useOrchestraStore.getState();
-  store.setCheckResult(sessionId, checkId, 'passed');
+  const getState = useOrchestraStore.getState;
+  getState().setCheckResult(sessionId, checkId, 'passed');
 
   // Check if all checks are now passed
-  const session = store.sessions[sessionId];
+  const session = getState().sessions[sessionId];
   if (!session) return;
 
   const allPassed = Object.values(session.checkResults).every((r) => r === 'passed');
 
   if (allPassed) {
     // Find the project and node
-    const projectId = Object.keys(store.projects).find((pid) => {
-      const project = store.projects[pid];
+    const projectId = Object.keys(getState().projects).find((pid) => {
+      const project = getState().projects[pid];
       return project.nodes.some((n) => n.id === session.nodeId);
     });
 
     if (projectId) {
-      store.setSessionStatus(sessionId, 'completed');
-      store.setNodeStatus(projectId, session.nodeId, 'completed');
+      getState().setSessionStatus(sessionId, 'completed');
+      getState().setNodeStatus(projectId, session.nodeId, 'completed');
     }
   }
 }
@@ -509,8 +531,8 @@ export function approveHumanCheck(sessionId: string, checkId: string): void {
  * Run entire project DAG with timeout and safety limits
  */
 export async function runProject(projectId: string): Promise<void> {
-  const store = useOrchestraStore.getState();
-  const project = store.projects[projectId];
+  const getState = useOrchestraStore.getState;
+  const project = getState().projects[projectId];
 
   if (!project) {
     throw new Error(`Project ${projectId} not found`);
@@ -518,7 +540,7 @@ export async function runProject(projectId: string): Promise<void> {
 
   // Reset all node statuses
   for (const node of project.nodes) {
-    store.setNodeStatus(projectId, node.id, 'pending');
+    getState().setNodeStatus(projectId, node.id, 'pending');
   }
 
   const completedNodeIds = new Set<string>();
@@ -533,11 +555,11 @@ export async function runProject(projectId: string): Promise<void> {
       iterations++;
       if (iterations > MAX_ITERATIONS) {
         // Mark all remaining pending/running nodes as failed
-        const currentProject = store.projects[projectId];
+        const currentProject = getState().projects[projectId];
         if (currentProject) {
           for (const node of currentProject.nodes) {
             if (node.status === 'pending' || node.status === 'running') {
-              store.setNodeStatus(projectId, node.id, 'failed');
+              getState().setNodeStatus(projectId, node.id, 'failed');
             }
           }
         }
@@ -547,19 +569,29 @@ export async function runProject(projectId: string): Promise<void> {
       // Safety check: timeout
       if (Date.now() - startTime > PROJECT_EXECUTION_TIMEOUT_MS) {
         // Mark all remaining pending/running nodes as failed
-        const currentProject = store.projects[projectId];
+        const currentProject = getState().projects[projectId];
         if (currentProject) {
           for (const node of currentProject.nodes) {
             if (node.status === 'pending' || node.status === 'running') {
-              store.setNodeStatus(projectId, node.id, 'failed');
+              getState().setNodeStatus(projectId, node.id, 'failed');
             }
           }
         }
         throw new Error(`Execution timed out after ${PROJECT_EXECUTION_TIMEOUT_MS / 1000} seconds`);
       }
 
-      const currentProject = store.projects[projectId];
+      const currentProject = getState().projects[projectId];
       if (!currentProject) break;
+
+      // Sync completion/failure sets with current node statuses (handles async approvals)
+      for (const node of currentProject.nodes) {
+        if (node.status === 'completed') {
+          completedNodeIds.add(node.id);
+        }
+        if (node.status === 'failed') {
+          failedNodeIds.add(node.id);
+        }
+      }
 
       const readyNodes = getReadyNodesProject(currentProject, completedNodeIds);
 
@@ -579,14 +611,22 @@ export async function runProject(projectId: string): Promise<void> {
         const hasRunning = currentProject.nodes.some((n) => n.status === 'running');
 
         if (hasFailed && !hasRunning) {
-          // All running work is done, and we have failures - stop
+          // All running work is done, and we have failures - mark remaining pending as failed
+          for (const node of currentProject.nodes) {
+            if (node.status === 'pending') {
+              getState().setNodeStatus(projectId, node.id, 'failed');
+              failedNodeIds.add(node.id);
+            }
+          }
           break;
         }
 
         // Check for awaiting approval
-        const awaitingApproval = currentProject.nodes.some(
-          (n) => n.status === 'running' && n.sessionId
-        );
+        const awaitingApproval = currentProject.nodes.some((n) => {
+          if (!n.sessionId) return false;
+          const session = getState().sessions[n.sessionId];
+          return session?.status === 'awaiting_approval';
+        });
         if (awaitingApproval) {
           // Wait and check again
           await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -611,13 +651,18 @@ export async function runProject(projectId: string): Promise<void> {
                 )
               ),
             ]);
-            completedNodeIds.add(node.id);
+            const updatedNode = getState().projects[projectId]?.nodes.find((n) => n.id === node.id);
+            if (updatedNode?.status === 'completed') {
+              completedNodeIds.add(node.id);
+            } else if (updatedNode?.status === 'failed') {
+              failedNodeIds.add(node.id);
+            }
           } catch {
             // Ensure node is marked as failed
             failedNodeIds.add(node.id);
-            const currentStatus = store.projects[projectId]?.nodes.find(n => n.id === node.id)?.status;
+            const currentStatus = getState().projects[projectId]?.nodes.find(n => n.id === node.id)?.status;
             if (currentStatus !== 'failed') {
-              store.setNodeStatus(projectId, node.id, 'failed');
+              getState().setNodeStatus(projectId, node.id, 'failed');
             }
           }
         })
@@ -625,15 +670,14 @@ export async function runProject(projectId: string): Promise<void> {
     }
   } catch (error) {
     // Final cleanup: ensure no nodes are stuck in running state
-    const finalProject = store.projects[projectId];
+    const finalProject = getState().projects[projectId];
     if (finalProject) {
       for (const node of finalProject.nodes) {
         if (node.status === 'running') {
-          store.setNodeStatus(projectId, node.id, 'failed');
+          getState().setNodeStatus(projectId, node.id, 'failed');
         }
       }
     }
     throw error;
   }
 }
-

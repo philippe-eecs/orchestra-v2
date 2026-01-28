@@ -30,8 +30,30 @@ export async function POST(request: NextRequest) {
 
     const args = buildCommand(executor as ExecutorType, prompt, options);
 
-    const output = await runCommand(args);
-    return NextResponse.json({ status: 'done', output });
+    try {
+      const output = await runCommand(args);
+      return NextResponse.json({ status: 'done', output });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Gemini fallback for unavailable 3.x models
+      if (executor === 'gemini' && /Requested entity was not found/i.test(errorMessage)) {
+        const requestedModel = String(options?.model || 'gemini-1.5-pro');
+        const fallbackModel = requestedModel.includes('flash')
+          ? 'gemini-1.5-flash'
+          : 'gemini-1.5-pro';
+
+        const fallbackArgs = buildCommand(
+          'gemini',
+          prompt,
+          { ...(options || {}), model: fallbackModel }
+        );
+        const output = await runCommand(fallbackArgs);
+        return NextResponse.json({ status: 'done', output, model: fallbackModel });
+      }
+
+      throw error;
+    }
   } catch (error) {
     return NextResponse.json(
       { status: 'error', error: String(error) },
@@ -44,7 +66,18 @@ function buildCommand(executor: ExecutorType, prompt: string, options?: Record<s
   // Build command as array - no shell interpolation possible
   switch (executor) {
     case 'claude': {
-      const args = ['claude', '-p', prompt];
+      const args = [
+        'claude',
+        '-p',
+        prompt,
+        '--output-format',
+        'text',
+        '--no-session-persistence',
+        '--permission-mode',
+        'dontAsk',
+        '--tools',
+        '',
+      ];
       if (options?.thinkingBudget && typeof options.thinkingBudget === 'number') {
         args.push('--thinking-budget', String(Math.floor(options.thinkingBudget)));
       }
@@ -52,16 +85,17 @@ function buildCommand(executor: ExecutorType, prompt: string, options?: Record<s
     }
 
     case 'codex': {
-      const args = ['codex', 'exec', prompt];
+      const args = ['codex', 'exec'];
       if (options?.reasoningLevel && ['low', 'medium', 'high'].includes(String(options.reasoningLevel))) {
-        args.push('--reasoning', String(options.reasoningLevel));
+        args.push('-c', `reasoning.effort="${String(options.reasoningLevel)}"`);
       }
+      args.push(prompt);
       return args;
     }
 
     case 'gemini': {
       // Validate model name - only allow alphanumeric, dashes, and dots
-      const modelRaw = options?.model || 'gemini-3-pro';
+      const modelRaw = options?.model || 'gemini-1.5-pro';
       const model = String(modelRaw).replace(/[^a-zA-Z0-9.-]/g, '');
       return ['gemini', prompt, '-m', model, '-o', 'text'];
     }
@@ -75,6 +109,7 @@ function runCommand(args: string[]): Promise<string> {
     // No shell: true - execute directly without shell interpolation
     const proc = spawn(cmd, rest, {
       shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: EXECUTION_TIMEOUT_MS,
     });
 
