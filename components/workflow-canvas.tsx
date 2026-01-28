@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -19,15 +19,18 @@ import {
   EdgeLabelRenderer,
   getBezierPath,
   EdgeProps,
+  MarkerType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Plus } from 'lucide-react';
+import { Plus, Package, LayoutGrid } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   useOrchestraStore,
   selectCurrentProject,
 } from '@/lib/store';
 import CustomNode from './custom-node';
+import { CreateComposedAgentDialog } from './create-composed-agent-dialog';
+import { autoLayoutDag } from '@/lib/dag-layout';
 import type { AgentConfig } from '@/lib/types';
 
 const nodeTypes: NodeTypes = {
@@ -95,6 +98,8 @@ export default function ProjectCanvas() {
   const deleteNode = useOrchestraStore((state) => state.deleteNode);
   const selectNode = useOrchestraStore((state) => state.selectNode);
 
+  const [createAgentDialogOpen, setCreateAgentDialogOpen] = useState(false);
+
   // Convert project nodes to React Flow format
   const rfNodes: Node[] = useMemo(() => {
     if (!project) return [];
@@ -138,6 +143,12 @@ export default function ProjectCanvas() {
         type: edge.sourceDeliverable ? 'deliverable' : 'smoothstep',
         animated: false,
         style: { stroke: 'hsl(var(--muted-foreground))', strokeWidth: 2 },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: 'hsl(var(--muted-foreground))',
+          width: 20,
+          height: 20,
+        },
         data: { deliverableLabel },
       };
     });
@@ -261,6 +272,21 @@ export default function ProjectCanvas() {
     [project, addNode, selectNode]
   );
 
+  const handleAutoLayout = useCallback(() => {
+    if (!project || project.nodes.length === 0) return;
+
+    const layoutedNodes = autoLayoutDag(project.nodes, project.edges, {
+      horizontalSpacing: 350,
+      verticalSpacing: 180,
+      direction: 'horizontal',
+    });
+
+    // Update all node positions
+    layoutedNodes.forEach((node) => {
+      updateNode(project.id, node.id, { position: node.position });
+    });
+  }, [project, updateNode]);
+
   if (!project) {
     return (
       <div className="flex-1 flex items-center justify-center bg-muted/30">
@@ -301,13 +327,40 @@ export default function ProjectCanvas() {
           nodeColor="hsl(var(--muted-foreground))"
           maskColor="hsl(var(--background) / 0.8)"
         />
-        <Panel position="top-left">
+        <Panel position="top-left" className="flex gap-2">
           <Button onClick={handleAddNode} size="sm" className="gap-2">
             <Plus className="w-4 h-4" />
             Add Node
           </Button>
+          {project.nodes.length > 1 && (
+            <Button
+              onClick={handleAutoLayout}
+              size="sm"
+              variant="outline"
+              className="gap-2"
+            >
+              <LayoutGrid className="w-4 h-4" />
+              Auto Layout
+            </Button>
+          )}
+          {project.nodes.length > 0 && (
+            <Button
+              onClick={() => setCreateAgentDialogOpen(true)}
+              size="sm"
+              variant="outline"
+              className="gap-2"
+            >
+              <Package className="w-4 h-4" />
+              Save as Agent
+            </Button>
+          )}
         </Panel>
       </ReactFlow>
+
+      <CreateComposedAgentDialog
+        open={createAgentDialogOpen}
+        onOpenChange={setCreateAgentDialogOpen}
+      />
     </div>
   );
 }

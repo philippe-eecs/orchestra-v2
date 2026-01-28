@@ -15,6 +15,9 @@ import type {
   Resource,
   NodeStatus,
   SessionStatus,
+  AgentTemplate,
+  PrimitiveAgentTemplate,
+  ComposedAgentTemplate,
 } from './types';
 
 // ========== STATE INTERFACE ==========
@@ -23,6 +26,7 @@ interface OrchestraState {
   // Core data model
   projects: Record<string, Project>;
   sessions: Record<string, Session>;
+  agentLibrary: Record<string, AgentTemplate>;
   nodeRuns: Record<string, NodeRun>;
 
   // UI State
@@ -78,6 +82,15 @@ interface OrchestraState {
   toggleAgentHub: () => void;
   openTerminalModal: (sessionId: string) => void;
   closeTerminalModal: () => void;
+
+  // ========== AGENT LIBRARY ACTIONS ==========
+  createComposedAgentFromProject: (
+    projectId: string,
+    name: string,
+    options: { description?: string; category?: string }
+  ) => string;
+  updateAgentTemplate: (id: string, updates: Partial<AgentTemplate>) => void;
+  deleteAgentTemplate: (id: string) => void;
 }
 
 // ========== UTILITIES ==========
@@ -86,12 +99,47 @@ const generateId = () => Math.random().toString(36).substring(2, 15);
 
 // ========== STORE ==========
 
+// Default primitive agent templates
+const defaultAgentLibrary: Record<string, AgentTemplate> = {
+  'claude-default': {
+    id: 'claude-default',
+    kind: 'primitive',
+    name: 'Claude',
+    description: 'Complex reasoning, planning, and multi-step analysis',
+    category: 'general',
+    agentType: 'claude',
+    defaultConfig: { type: 'claude' },
+    createdAt: 0,
+  },
+  'codex-default': {
+    id: 'codex-default',
+    kind: 'primitive',
+    name: 'Codex',
+    description: 'Code generation, refactoring, and architectural work',
+    category: 'code',
+    agentType: 'codex',
+    defaultConfig: { type: 'codex', reasoningEffort: 'high' },
+    createdAt: 0,
+  },
+  'gemini-default': {
+    id: 'gemini-default',
+    kind: 'primitive',
+    name: 'Gemini',
+    description: 'Multimodal analysis, web search, and document understanding',
+    category: 'research',
+    agentType: 'gemini',
+    defaultConfig: { type: 'gemini', model: 'gemini-3-pro-preview' },
+    createdAt: 0,
+  },
+};
+
 export const useOrchestraStore = create<OrchestraState>()(
   immer((set) => ({
     // Initial State
     projects: {},
     sessions: {},
     nodeRuns: {},
+    agentLibrary: defaultAgentLibrary,
     selectedProjectId: null,
     selectedNodeId: null,
     agentHubMinimized: false,
@@ -532,6 +580,100 @@ export const useOrchestraStore = create<OrchestraState>()(
       set((state) => {
         state.terminalModalOpen = false;
         state.terminalSessionId = null;
+      });
+    },
+
+    // ========== AGENT LIBRARY ACTIONS ==========
+
+    createComposedAgentFromProject: (projectId, name, options) => {
+      const id = generateId();
+      set((state) => {
+        const project = state.projects[projectId];
+        if (!project) return;
+
+        // Convert project nodes to composed nodes (strip position, status, sessionId)
+        const composedNodes = project.nodes.map((node) => ({
+          id: node.id,
+          title: node.title,
+          prompt: node.prompt,
+          agent: node.agent,
+          context: node.context,
+          deliverables: node.deliverables,
+          checks: node.checks,
+        }));
+
+        // Auto-detect inputs: non-parent_output contexts from root nodes
+        const rootNodeIds = new Set(
+          project.nodes
+            .filter((n) => !project.edges.some((e) => e.targetId === n.id))
+            .map((n) => n.id)
+        );
+        const inputs = project.nodes
+          .filter((n) => rootNodeIds.has(n.id))
+          .flatMap((n) =>
+            n.context
+              .filter((c) => c.type !== 'parent_output')
+              .map((c, i) => ({
+                id: `input-${n.id}-${i}`,
+                name: c.type === 'file' ? c.path : c.type === 'url' ? c.url : `Input ${i + 1}`,
+                mappedTo: [{ nodeId: n.id, contextType: c.type }],
+              }))
+          );
+
+        // Auto-detect outputs: deliverables from terminal nodes
+        const terminalNodeIds = new Set(
+          project.nodes
+            .filter((n) => !project.edges.some((e) => e.sourceId === n.id))
+            .map((n) => n.id)
+        );
+        const outputs = project.nodes
+          .filter((n) => terminalNodeIds.has(n.id))
+          .flatMap((n) =>
+            n.deliverables.map((d) => ({
+              id: `output-${n.id}-${d.id}`,
+              name:
+                d.type === 'file'
+                  ? d.path
+                  : d.type === 'response'
+                  ? d.description
+                  : d.type === 'pr'
+                  ? d.repo
+                  : d.url,
+              sourceNodeId: n.id,
+              sourceDeliverableId: d.id,
+            }))
+          );
+
+        state.agentLibrary[id] = {
+          id,
+          kind: 'composed',
+          name,
+          description: options.description || `Composed agent from ${project.name}`,
+          category: options.category,
+          createdAt: Date.now(),
+          nodes: composedNodes,
+          edges: project.edges,
+          inputs,
+          outputs,
+        } as ComposedAgentTemplate;
+      });
+      return id;
+    },
+
+    updateAgentTemplate: (id, updates) => {
+      set((state) => {
+        if (state.agentLibrary[id]) {
+          Object.assign(state.agentLibrary[id], updates);
+        }
+      });
+    },
+
+    deleteAgentTemplate: (id) => {
+      set((state) => {
+        // Don't allow deleting default primitives
+        if (!id.endsWith('-default')) {
+          delete state.agentLibrary[id];
+        }
       });
     },
   }))

@@ -12,6 +12,7 @@ import {
   Terminal,
   Eye,
   Search,
+  Maximize2,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -33,6 +34,8 @@ import {
   selectCurrentProject,
   selectCurrentProjectNode,
 } from '@/lib/store';
+import { PromptEditorModal } from './prompt-editor-modal';
+import type { AgentTemplate } from '@/lib/types';
 import type {
   ContextRef,
   DeliverableInput,
@@ -55,6 +58,9 @@ const checkTypeOptions = [
   { value: 'command', label: 'Command', icon: Terminal },
   { value: 'contains', label: 'Contains', icon: Search },
   { value: 'human_approval', label: 'Human Approval', icon: Eye },
+  { value: 'llm_critic', label: 'LLM Critic', icon: Eye },
+  { value: 'test_runner', label: 'Test Runner', icon: Terminal },
+  { value: 'eval_baseline', label: 'Performance Baseline', icon: FileCheck },
 ];
 
 const deliverableTypeOptions = [
@@ -86,12 +92,21 @@ function NodeEditor({ node, project }: NodeEditorProps) {
   const removeNodeDeliverable = useOrchestraStore((state) => state.removeNodeDeliverable);
   const addNodeCheck = useOrchestraStore((state) => state.addNodeCheck);
   const removeNodeCheck = useOrchestraStore((state) => state.removeNodeCheck);
+  const agentLibrary = useOrchestraStore((state) => state.agentLibrary);
+
+  // Separate primitive and composed agents from library
+  const composedAgents = Object.values(agentLibrary).filter(
+    (a): a is AgentTemplate & { kind: 'composed' } => a.kind === 'composed'
+  );
 
   // Initialize state from node props - component remounts when node.id changes
   const [title, setTitle] = useState(node.title);
   const [description, setDescription] = useState(node.description);
   const [prompt, setPrompt] = useState(node.prompt);
   const [agentType, setAgentType] = useState<AgentType>(node.agent.type);
+  const [composedAgentId, setComposedAgentId] = useState(
+    node.agent.type === 'composed' ? node.agent.agentId : ''
+  );
   const [claudeModel, setClaudeModel] = useState(
     node.agent.type === 'claude' ? node.agent.model || '' : ''
   );
@@ -123,8 +138,29 @@ function NodeEditor({ node, project }: NodeEditorProps) {
   const [newCheckValue, setNewCheckValue] = useState('');
   const [newCheckAutoRetry, setNewCheckAutoRetry] = useState(false);
 
+  // LLM Critic check fields
+  const [newCriticAgent, setNewCriticAgent] = useState<AgentType>('claude');
+  const [newCriticCriteria, setNewCriticCriteria] = useState('');
+  const [newCriticThreshold, setNewCriticThreshold] = useState('70');
+  const [newCriticAddToContext, setNewCriticAddToContext] = useState(false);
+
+  // Test Runner check fields
+  const [newTestFramework, setNewTestFramework] = useState<'npm' | 'pytest' | 'jest' | 'cargo' | 'go' | 'custom'>('npm');
+  const [newTestCommand, setNewTestCommand] = useState('');
+  const [newTestPattern, setNewTestPattern] = useState('');
+
+  // Eval Baseline check fields
+  const [newEvalMetric, setNewEvalMetric] = useState<'duration' | 'memory' | 'accuracy' | 'custom'>('duration');
+  const [newEvalBaseline, setNewEvalBaseline] = useState('');
+  const [newEvalTolerance, setNewEvalTolerance] = useState('10');
+  const [newEvalCommand, setNewEvalCommand] = useState('');
+  const [newEvalEvaluator, setNewEvalEvaluator] = useState('');
+
+  // Fullscreen prompt editor state
+  const [promptModalOpen, setPromptModalOpen] = useState(false);
+
   const buildAgentConfig = useCallback(
-    (overrideType?: AgentType): AgentConfig => {
+    (overrideType?: AgentType, overrideComposedId?: string): AgentConfig => {
       const type = overrideType ?? agentType;
       switch (type) {
         case 'claude': {
@@ -145,9 +181,15 @@ function NodeEditor({ node, project }: NodeEditorProps) {
         case 'gemini': {
           return { type: 'gemini', model: geminiModel || undefined };
         }
+        case 'composed': {
+          return {
+            type: 'composed',
+            agentId: overrideComposedId ?? composedAgentId,
+          };
+        }
       }
     },
-    [agentType, claudeModel, claudeThinkingBudget, codexModel, codexReasoning, geminiModel]
+    [agentType, claudeModel, claudeThinkingBudget, codexModel, codexReasoning, geminiModel, composedAgentId]
   );
 
   const handleSave = useCallback(() => {
@@ -214,7 +256,16 @@ function NodeEditor({ node, project }: NodeEditorProps) {
   }, [project.id, node.id, newDeliverableType, newDeliverableValue, addNodeDeliverable]);
 
   const handleAddCheck = useCallback(() => {
-    if (newCheckType !== 'human_approval' && !newCheckValue) return;
+    // Validation based on check type
+    const needsValue = ['file_exists', 'command', 'contains'].includes(newCheckType);
+    const needsCriteria = newCheckType === 'llm_critic';
+    const needsBaseline = newCheckType === 'eval_baseline';
+    const needsCommand = newCheckType === 'test_runner' && newTestFramework === 'custom';
+
+    if (needsValue && !newCheckValue) return;
+    if (needsCriteria && !newCriticCriteria) return;
+    if (needsBaseline && !newEvalBaseline) return;
+    if (needsCommand && !newTestCommand) return;
 
     let check: CheckInput;
     switch (newCheckType) {
@@ -231,18 +282,71 @@ function NodeEditor({ node, project }: NodeEditorProps) {
       case 'human_approval':
         check = { type: 'human_approval' };
         break;
+      case 'llm_critic':
+        check = {
+          type: 'llm_critic',
+          criticAgent: newCriticAgent,
+          criteria: newCriticCriteria,
+          threshold: parseInt(newCriticThreshold, 10) || 70,
+          addToContext: newCriticAddToContext,
+          autoRetry: newCheckAutoRetry,
+        };
+        break;
+      case 'test_runner':
+        check = {
+          type: 'test_runner',
+          framework: newTestFramework,
+          command: newTestFramework === 'custom' ? newTestCommand : undefined,
+          testPattern: newTestPattern || undefined,
+          autoRetry: newCheckAutoRetry,
+        };
+        break;
+      case 'eval_baseline':
+        check = {
+          type: 'eval_baseline',
+          metric: newEvalMetric,
+          baseline: parseFloat(newEvalBaseline) || 0,
+          tolerance: parseFloat(newEvalTolerance) || 10,
+          command: ['duration', 'memory'].includes(newEvalMetric) ? newEvalCommand : undefined,
+          evaluator: ['accuracy', 'custom'].includes(newEvalMetric) ? newEvalEvaluator : undefined,
+          autoRetry: newCheckAutoRetry,
+        };
+        break;
     }
 
     addNodeCheck(project.id, node.id, check);
+
+    // Reset form state
     setNewCheckValue('');
     setNewCheckAutoRetry(false);
-  }, [project.id, node.id, newCheckType, newCheckValue, newCheckAutoRetry, addNodeCheck]);
+    setNewCriticCriteria('');
+    setNewCriticThreshold('70');
+    setNewCriticAddToContext(false);
+    setNewTestCommand('');
+    setNewTestPattern('');
+    setNewEvalBaseline('');
+    setNewEvalTolerance('10');
+    setNewEvalCommand('');
+    setNewEvalEvaluator('');
+  }, [
+    project.id, node.id, newCheckType, newCheckValue, newCheckAutoRetry, addNodeCheck,
+    newCriticAgent, newCriticCriteria, newCriticThreshold, newCriticAddToContext,
+    newTestFramework, newTestCommand, newTestPattern,
+    newEvalMetric, newEvalBaseline, newEvalTolerance, newEvalCommand, newEvalEvaluator,
+  ]);
 
   const handleAgentTypeChange = (v: AgentType) => {
     setAgentType(v);
     // Save immediately on agent type change
     updateNode(project.id, node.id, {
       agent: buildAgentConfig(v),
+    });
+  };
+
+  const handleComposedAgentChange = (agentId: string) => {
+    setComposedAgentId(agentId);
+    updateNode(project.id, node.id, {
+      agent: { type: 'composed', agentId },
     });
   };
 
@@ -321,20 +425,58 @@ function NodeEditor({ node, project }: NodeEditorProps) {
                       </div>
                     </SelectItem>
                   ))}
+                  {composedAgents.length > 0 && (
+                    <SelectItem value="composed">
+                      <div className="flex flex-col">
+                        <span>Composed Agent</span>
+                        <span className="text-xs text-muted-foreground">Custom multi-agent workflow</span>
+                      </div>
+                    </SelectItem>
+                  )}
                 </SelectContent>
               </Select>
             </div>
 
+            {agentType === 'composed' && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Select Composed Agent</label>
+                <Select
+                  value={composedAgentId}
+                  onValueChange={handleComposedAgentChange}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose an agent..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {composedAgents.map((agent) => (
+                      <SelectItem key={agent.id} value={agent.id}>
+                        <div className="flex flex-col">
+                          <span>{agent.name}</span>
+                          <span className="text-xs text-muted-foreground">{agent.description}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             {agentType === 'gemini' && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">Model</label>
-                <Select value={geminiModel || 'gemini-3-pro'} onValueChange={handleGeminiModelChange}>
+                <Select
+                  value={geminiModel || 'gemini-3-pro-preview'}
+                  onValueChange={handleGeminiModelChange}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="gemini-3-pro-preview">Gemini 3 Pro (Preview)</SelectItem>
                     <SelectItem value="gemini-3-pro">Gemini 3 Pro</SelectItem>
                     <SelectItem value="gemini-3-flash">Gemini 3 Flash</SelectItem>
+                    <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
+                    <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
                     <SelectItem value="gemini-1.5-pro">Gemini 1.5 Pro</SelectItem>
                     <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
                   </SelectContent>
@@ -354,7 +496,7 @@ function NodeEditor({ node, project }: NodeEditorProps) {
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Thinking Budget</label>
+                  <label className="text-sm font-medium">Thinking Budget (soft)</label>
                   <Input
                     type="number"
                     value={claudeThinkingBudget}
@@ -397,7 +539,18 @@ function NodeEditor({ node, project }: NodeEditorProps) {
             <Separator />
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Prompt</label>
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">Prompt</label>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  onClick={() => setPromptModalOpen(true)}
+                  title="Edit in fullscreen"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </Button>
+              </div>
               <Textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -602,6 +755,9 @@ function NodeEditor({ node, project }: NodeEditorProps) {
                         {check.type === 'command' && check.cmd}
                         {check.type === 'contains' && `${check.path} contains "${check.pattern}"`}
                         {check.type === 'human_approval' && 'Manual review'}
+                        {check.type === 'llm_critic' && `Critic: ${check.criteria.slice(0, 30)}...`}
+                        {check.type === 'test_runner' && `${check.framework} tests`}
+                        {check.type === 'eval_baseline' && `${check.metric} ≤${check.baseline}±${check.tolerance}%`}
                       </span>
                       {check.autoRetry && (
                         <Badge variant="secondary" className="shrink-0 text-xs">
@@ -644,7 +800,8 @@ function NodeEditor({ node, project }: NodeEditorProps) {
                   </SelectContent>
                 </Select>
 
-                {newCheckType !== 'human_approval' && (
+                {/* Basic check types */}
+                {['file_exists', 'command', 'contains'].includes(newCheckType) && (
                   <Input
                     value={newCheckValue}
                     onChange={(e) => setNewCheckValue(e.target.value)}
@@ -656,6 +813,136 @@ function NodeEditor({ node, project }: NodeEditorProps) {
                         : 'path|pattern'
                     }
                   />
+                )}
+
+                {/* LLM Critic fields */}
+                {newCheckType === 'llm_critic' && (
+                  <>
+                    <Select
+                      value={newCriticAgent}
+                      onValueChange={(v: AgentType) => setNewCriticAgent(v)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Critic Agent" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {agentOptions.map((opt) => (
+                          <SelectItem key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Textarea
+                      value={newCriticCriteria}
+                      onChange={(e) => setNewCriticCriteria(e.target.value)}
+                      placeholder="Evaluation criteria..."
+                      className="min-h-[80px] text-sm"
+                    />
+                    <div className="flex gap-2">
+                      <Input
+                        type="number"
+                        value={newCriticThreshold}
+                        onChange={(e) => setNewCriticThreshold(e.target.value)}
+                        placeholder="Threshold"
+                        className="w-24"
+                      />
+                      <span className="text-xs text-muted-foreground self-center">/ 100</span>
+                    </div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={newCriticAddToContext}
+                        onChange={(e) => setNewCriticAddToContext(e.target.checked)}
+                        className="rounded"
+                      />
+                      Add critique to context on retry
+                    </label>
+                  </>
+                )}
+
+                {/* Test Runner fields */}
+                {newCheckType === 'test_runner' && (
+                  <>
+                    <Select
+                      value={newTestFramework}
+                      onValueChange={(v: 'npm' | 'pytest' | 'jest' | 'cargo' | 'go' | 'custom') => setNewTestFramework(v)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Test Framework" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="npm">npm test</SelectItem>
+                        <SelectItem value="jest">Jest</SelectItem>
+                        <SelectItem value="pytest">pytest</SelectItem>
+                        <SelectItem value="cargo">Cargo (Rust)</SelectItem>
+                        <SelectItem value="go">Go test</SelectItem>
+                        <SelectItem value="custom">Custom command</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {newTestFramework === 'custom' && (
+                      <Input
+                        value={newTestCommand}
+                        onChange={(e) => setNewTestCommand(e.target.value)}
+                        placeholder="Custom test command..."
+                      />
+                    )}
+                    <Input
+                      value={newTestPattern}
+                      onChange={(e) => setNewTestPattern(e.target.value)}
+                      placeholder="Test pattern (optional)"
+                    />
+                  </>
+                )}
+
+                {/* Eval Baseline fields */}
+                {newCheckType === 'eval_baseline' && (
+                  <>
+                    <Select
+                      value={newEvalMetric}
+                      onValueChange={(v: 'duration' | 'memory' | 'accuracy' | 'custom') => setNewEvalMetric(v)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Metric" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="duration">Duration (ms)</SelectItem>
+                        <SelectItem value="memory">Memory (MB)</SelectItem>
+                        <SelectItem value="accuracy">Accuracy</SelectItem>
+                        <SelectItem value="custom">Custom</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <div className="flex gap-2">
+                      <Input
+                        type="number"
+                        value={newEvalBaseline}
+                        onChange={(e) => setNewEvalBaseline(e.target.value)}
+                        placeholder="Baseline"
+                        className="flex-1"
+                      />
+                      <Input
+                        type="number"
+                        value={newEvalTolerance}
+                        onChange={(e) => setNewEvalTolerance(e.target.value)}
+                        placeholder="±%"
+                        className="w-20"
+                      />
+                    </div>
+                    {['duration', 'memory'].includes(newEvalMetric) && (
+                      <Input
+                        value={newEvalCommand}
+                        onChange={(e) => setNewEvalCommand(e.target.value)}
+                        placeholder="Command to measure..."
+                      />
+                    )}
+                    {['accuracy', 'custom'].includes(newEvalMetric) && (
+                      <Input
+                        value={newEvalEvaluator}
+                        onChange={(e) => setNewEvalEvaluator(e.target.value)}
+                        placeholder="Evaluator script (returns number)..."
+                      />
+                    )}
+                  </>
                 )}
 
                 {newCheckType !== 'human_approval' && (
@@ -679,6 +966,17 @@ function NodeEditor({ node, project }: NodeEditorProps) {
           </TabsContent>
         </Tabs>
       </ScrollArea>
+
+      <PromptEditorModal
+        open={promptModalOpen}
+        onOpenChange={setPromptModalOpen}
+        title={title}
+        initialPrompt={prompt}
+        onSave={(newPrompt) => {
+          setPrompt(newPrompt);
+          updateNode(project.id, node.id, { prompt: newPrompt });
+        }}
+      />
     </div>
   );
 }

@@ -36,12 +36,12 @@ export async function POST(request: NextRequest) {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
-      // Gemini fallback for unavailable 3.x models
+      // Gemini fallback for unavailable models
       if (executor === 'gemini' && /Requested entity was not found/i.test(errorMessage)) {
-        const requestedModel = String(options?.model || 'gemini-1.5-pro');
+        const requestedModel = String(options?.model || 'gemini-3-pro-preview');
         const fallbackModel = requestedModel.includes('flash')
-          ? 'gemini-1.5-flash'
-          : 'gemini-1.5-pro';
+          ? 'gemini-2.5-flash'
+          : 'gemini-2.5-pro';
 
         const fallbackArgs = buildCommand(
           'gemini',
@@ -49,7 +49,12 @@ export async function POST(request: NextRequest) {
           { ...(options || {}), model: fallbackModel }
         );
         const output = await runCommand(fallbackArgs);
-        return NextResponse.json({ status: 'done', output, model: fallbackModel });
+        return NextResponse.json({
+          status: 'done',
+          output,
+          model: fallbackModel,
+          warning: `Requested model ${requestedModel} was unavailable; fell back to ${fallbackModel}.`,
+        });
       }
 
       throw error;
@@ -78,16 +83,24 @@ function buildCommand(executor: ExecutorType, prompt: string, options?: Record<s
         '--tools',
         '',
       ];
+      if (options?.model && typeof options.model === 'string') {
+        args.push('--model', options.model);
+      }
       if (options?.thinkingBudget && typeof options.thinkingBudget === 'number') {
-        args.push('--thinking-budget', String(Math.floor(options.thinkingBudget)));
+        const budget = Math.floor(options.thinkingBudget);
+        args.push('--append-system-prompt', `Think for at most ${budget} tokens.`);
       }
       return args;
     }
 
     case 'codex': {
-      const args = ['codex', 'exec'];
-      if (options?.reasoningLevel && ['low', 'medium', 'high'].includes(String(options.reasoningLevel))) {
-        args.push('-c', `reasoning.effort="${String(options.reasoningLevel)}"`);
+      const args = ['codex', 'exec', '--skip-git-repo-check'];
+      const reasoning = options?.reasoningEffort ?? options?.reasoningLevel;
+      if (reasoning && ['low', 'medium', 'high', 'xhigh'].includes(String(reasoning))) {
+        args.push('-c', `reasoning.effort=${String(reasoning)}`);
+      }
+      if (options?.model && typeof options.model === 'string') {
+        args.push('-m', options.model);
       }
       args.push(prompt);
       return args;
@@ -95,7 +108,7 @@ function buildCommand(executor: ExecutorType, prompt: string, options?: Record<s
 
     case 'gemini': {
       // Validate model name - only allow alphanumeric, dashes, and dots
-      const modelRaw = options?.model || 'gemini-1.5-pro';
+      const modelRaw = options?.model || 'gemini-3-pro-preview';
       const model = String(modelRaw).replace(/[^a-zA-Z0-9.-]/g, '');
       return ['gemini', prompt, '-m', model, '-o', 'text'];
     }

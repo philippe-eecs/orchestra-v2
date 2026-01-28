@@ -1,11 +1,30 @@
 // ========== AGENT CONFIG ==========
 
-export type AgentType = 'claude' | 'codex' | 'gemini';
+export type AgentType = 'claude' | 'codex' | 'gemini' | 'composed';
 
-export interface AgentConfig {
-  type: AgentType;
-  model?: string; // Optional model override
-}
+export type ClaudeConfig = {
+  type: 'claude';
+  model?: string;
+  thinkingBudget?: number;
+};
+
+export type CodexConfig = {
+  type: 'codex';
+  model?: string;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+};
+
+export type GeminiConfig = {
+  type: 'gemini';
+  model?: string;
+};
+
+export type ComposedAgentConfig = {
+  type: 'composed';
+  agentId: string; // References agent library
+};
+
+export type AgentConfig = ClaudeConfig | CodexConfig | GeminiConfig | ComposedAgentConfig;
 
 // ========== CONTEXT ==========
 
@@ -42,14 +61,62 @@ export type Check =
   | (BaseCheck & { type: 'file_exists'; path: string })
   | (BaseCheck & { type: 'command'; cmd: string })
   | (BaseCheck & { type: 'human_approval' })
-  | (BaseCheck & { type: 'contains'; path: string; pattern: string });
+  | (BaseCheck & { type: 'contains'; path: string; pattern: string })
+  | (BaseCheck & {
+      type: 'llm_critic';
+      criticAgent: AgentType;
+      criteria: string;
+      threshold?: number; // 0-100, default 70
+      addToContext?: boolean; // Add critique to context on retry
+    })
+  | (BaseCheck & {
+      type: 'test_runner';
+      framework: 'npm' | 'pytest' | 'jest' | 'cargo' | 'go' | 'custom';
+      command?: string; // Required for 'custom'
+      testPattern?: string;
+    })
+  | (BaseCheck & {
+      type: 'eval_baseline';
+      metric: 'duration' | 'memory' | 'accuracy' | 'custom';
+      baseline: number;
+      tolerance: number; // Percentage
+      command?: string;
+      evaluator?: string;
+    });
 
 // Helper type for creating checks (without id)
 export type CheckInput =
   | { type: 'file_exists'; path: string; autoRetry?: boolean; maxRetries?: number }
   | { type: 'command'; cmd: string; autoRetry?: boolean; maxRetries?: number }
   | { type: 'human_approval' }
-  | { type: 'contains'; path: string; pattern: string; autoRetry?: boolean; maxRetries?: number };
+  | { type: 'contains'; path: string; pattern: string; autoRetry?: boolean; maxRetries?: number }
+  | {
+      type: 'llm_critic';
+      criticAgent: AgentType;
+      criteria: string;
+      threshold?: number;
+      addToContext?: boolean;
+      autoRetry?: boolean;
+      maxRetries?: number;
+    }
+  | {
+      type: 'test_runner';
+      framework: 'npm' | 'pytest' | 'jest' | 'cargo' | 'go' | 'custom';
+      command?: string;
+      testPattern?: string;
+      autoRetry?: boolean;
+      maxRetries?: number;
+    }
+  | {
+      type: 'eval_baseline';
+      metric: 'duration' | 'memory' | 'accuracy' | 'custom';
+      baseline: number;
+      tolerance: number;
+      command?: string;
+      evaluator?: string;
+      autoRetry?: boolean;
+      maxRetries?: number;
+    };
 
 // ========== NODE ==========
 
@@ -202,3 +269,54 @@ export interface UIState {
   terminalModalOpen: boolean;
   terminalSessionId: string | null;
 }
+
+// ========== AGENT LIBRARY ==========
+
+export interface BaseAgentTemplate {
+  id: string;
+  name: string;
+  description: string;
+  category?: string; // 'research', 'code', 'analysis', etc.
+  createdAt: number;
+}
+
+export interface PrimitiveAgentTemplate extends BaseAgentTemplate {
+  kind: 'primitive';
+  agentType: 'claude' | 'codex' | 'gemini';
+  defaultConfig: Partial<ClaudeConfig | CodexConfig | GeminiConfig>;
+}
+
+// ComposedNode = Node without position/status/sessionId (the pure logic)
+export interface ComposedNode {
+  id: string;
+  title: string;
+  prompt: string;
+  agent: AgentConfig;
+  context: ContextRef[];
+  deliverables: Deliverable[];
+  checks: Check[];
+}
+
+export interface ComposedAgentInput {
+  id: string;
+  name: string;
+  description?: string;
+  mappedTo: { nodeId: string; contextType: ContextRef['type'] }[];
+}
+
+export interface ComposedAgentOutput {
+  id: string;
+  name: string;
+  sourceNodeId: string;
+  sourceDeliverableId?: string;
+}
+
+export interface ComposedAgentTemplate extends BaseAgentTemplate {
+  kind: 'composed';
+  nodes: ComposedNode[];
+  edges: Edge[];
+  inputs: ComposedAgentInput[];
+  outputs: ComposedAgentOutput[];
+}
+
+export type AgentTemplate = PrimitiveAgentTemplate | ComposedAgentTemplate;

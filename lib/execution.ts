@@ -5,7 +5,8 @@ import type {
   Deliverable,
   Check,
   CompiledContext,
-  AgentType,
+  AgentConfig,
+  ComposedAgentTemplate,
 } from './types';
 import { useOrchestraStore } from './store';
 import { executeAgent } from './api';
@@ -147,17 +148,30 @@ export function buildFullPrompt(
 
 // ========== CLI COMMAND BUILDING ==========
 
-export function buildAgentCommand(agent: { type: AgentType; model?: string }, prompt: string): string {
+export function buildAgentCommand(agent: AgentConfig, prompt: string): string {
   const escapedPrompt = prompt.replace(/"/g, '\\"').replace(/`/g, '\\`');
 
   switch (agent.type) {
-    case 'claude':
-      return `claude -p "${escapedPrompt}"`;
-    case 'codex':
-      return `codex exec "${escapedPrompt}"`;
-    case 'gemini':
-      const model = agent.model || 'gemini-3-pro';
+    case 'claude': {
+      const modelArg = agent.model ? ` --model ${agent.model}` : '';
+      const budgetArg = agent.thinkingBudget
+        ? ` --append-system-prompt "Think for at most ${agent.thinkingBudget} tokens."`
+        : '';
+      return `claude -p "${escapedPrompt}"${modelArg}${budgetArg}`;
+    }
+    case 'codex': {
+      const modelArg = agent.model ? ` -m ${agent.model}` : '';
+      const reasoningArg = agent.reasoningEffort ? ` -c reasoning.effort=${agent.reasoningEffort}` : '';
+      return `codex exec${modelArg}${reasoningArg} "${escapedPrompt}"`;
+    }
+    case 'gemini': {
+      const model = agent.model || 'gemini-3-pro-preview';
       return `gemini "${escapedPrompt}" -m ${model} -o text`;
+    }
+    case 'composed': {
+      // Composed agents are executed differently - this is just for logging
+      return `[Composed Agent: ${agent.agentId}]`;
+    }
   }
 }
 
@@ -168,8 +182,9 @@ export function buildAgentCommand(agent: { type: AgentType; model?: string }, pr
  */
 export async function runCheck(
   check: Check,
-  projectLocation?: string
-): Promise<{ passed: boolean; error?: string }> {
+  projectLocation?: string,
+  nodeOutput?: string
+): Promise<{ passed: boolean; error?: string; critique?: string }> {
   switch (check.type) {
     case 'file_exists':
       try {
@@ -215,6 +230,80 @@ export async function runCheck(
     case 'human_approval':
       // Human approval is handled separately via UI
       return { passed: false, error: 'Awaiting human approval' };
+
+    case 'llm_critic':
+      try {
+        if (!nodeOutput) {
+          return { passed: false, error: 'No node output to critique' };
+        }
+        const response = await fetch('/api/check/llm-critic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nodeOutput,
+            criticAgent: check.criticAgent,
+            criteria: check.criteria,
+            threshold: check.threshold,
+            projectLocation,
+          }),
+        });
+        const result = await response.json();
+        return {
+          passed: result.passed,
+          error: result.passed ? undefined : `Score ${result.score}/${check.threshold || 70}`,
+          critique: result.critique,
+        };
+      } catch (error) {
+        return { passed: false, error: `LLM Critic failed: ${error}` };
+      }
+
+    case 'test_runner':
+      try {
+        const response = await fetch('/api/check/test-runner', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            framework: check.framework,
+            command: check.command,
+            testPattern: check.testPattern,
+            projectLocation,
+          }),
+        });
+        const result = await response.json();
+        return {
+          passed: result.passed,
+          error: result.passed
+            ? undefined
+            : `Tests failed: ${result.summary.failed}/${result.summary.total}`,
+        };
+      } catch (error) {
+        return { passed: false, error: `Test runner failed: ${error}` };
+      }
+
+    case 'eval_baseline':
+      try {
+        const response = await fetch('/api/check/eval-baseline', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            metric: check.metric,
+            baseline: check.baseline,
+            tolerance: check.tolerance,
+            command: check.command,
+            evaluator: check.evaluator,
+            projectLocation,
+          }),
+        });
+        const result = await response.json();
+        return {
+          passed: result.passed,
+          error: result.passed
+            ? undefined
+            : `${check.metric} deviation ${result.deviation.toFixed(1)}% exceeds tolerance ${check.tolerance}%`,
+        };
+      } catch (error) {
+        return { passed: false, error: `Eval baseline failed: ${error}` };
+      }
   }
 }
 
@@ -224,7 +313,8 @@ export async function runCheck(
 export async function runAllChecks(
   node: Node,
   sessionId: string,
-  projectLocation?: string
+  projectLocation?: string,
+  nodeOutput?: string
 ): Promise<{
   allPassed: boolean;
   needsHumanApproval: boolean;
@@ -245,7 +335,7 @@ export async function runAllChecks(
       continue;
     }
 
-    const result = await runCheck(check, projectLocation);
+    const result = await runCheck(check, projectLocation, nodeOutput);
 
     if (result.passed) {
       store.setCheckResult(sessionId, check.id, 'passed');
@@ -381,6 +471,192 @@ export function getParentOutputs(
   return outputs;
 }
 
+// ========== COMPOSED AGENT EXECUTION ==========
+
+/**
+ * Execute a composed agent (sub-DAG)
+ * Creates an ephemeral execution context and runs the sub-DAG
+ */
+export async function executeComposedAgent(
+  template: ComposedAgentTemplate,
+  parentContext: CompiledContext,
+  projectLocation?: string
+): Promise<{ output: string; status: 'completed' | 'failed'; error?: string }> {
+  const store = useOrchestraStore.getState();
+
+  // Create ephemeral state for tracking sub-DAG execution
+  const nodeOutputs: Record<string, string> = {};
+  const completedNodes = new Set<string>();
+  const failedNodes = new Set<string>();
+
+  // Map parent context to sub-DAG inputs
+  for (const input of template.inputs) {
+    for (const mapping of input.mappedTo) {
+      // For now, we inject the entire parent context into mapped nodes
+      // In a full implementation, we'd be more selective based on contextType
+    }
+  }
+
+  // Execute sub-DAG using topological order
+  const topoOrder = topologicalSortSubDAG(template.nodes, template.edges);
+
+  for (const nodeId of topoOrder) {
+    const composedNode = template.nodes.find((n) => n.id === nodeId);
+    if (!composedNode) continue;
+
+    // Check if dependencies are satisfied
+    const incomingEdges = template.edges.filter((e) => e.targetId === nodeId);
+    const depsOk = incomingEdges.every((e) => completedNodes.has(e.sourceId));
+    if (!depsOk) {
+      // Skip if dependencies failed
+      failedNodes.add(nodeId);
+      continue;
+    }
+
+    // Build context for this sub-node
+    const subContext: CompiledContext = {
+      files: parentContext.files,
+      urls: parentContext.urls,
+      parentOutputs: [],
+      markdownContent: parentContext.markdownContent,
+    };
+
+    // Add outputs from parent nodes in sub-DAG
+    for (const edge of incomingEdges) {
+      if (nodeOutputs[edge.sourceId]) {
+        subContext.parentOutputs.push({
+          nodeId: edge.sourceId,
+          content: nodeOutputs[edge.sourceId],
+        });
+      }
+    }
+
+    // Build prompt
+    const fullPrompt = buildFullPrompt(
+      {
+        ...composedNode,
+        position: { x: 0, y: 0 },
+        status: 'pending',
+        sessionId: null,
+        description: '',
+      } as Node,
+      subContext
+    );
+
+    // Handle nested composed agents recursively
+    if (composedNode.agent.type === 'composed') {
+      const nestedTemplate = store.agentLibrary[composedNode.agent.agentId] as ComposedAgentTemplate;
+      if (nestedTemplate?.kind === 'composed') {
+        const nestedResult = await executeComposedAgent(nestedTemplate, subContext, projectLocation);
+        if (nestedResult.status === 'completed') {
+          nodeOutputs[nodeId] = nestedResult.output;
+          completedNodes.add(nodeId);
+        } else {
+          failedNodes.add(nodeId);
+        }
+        continue;
+      }
+    }
+
+    // Execute primitive agent
+    try {
+      const result = await executeAgent({
+        executor: composedNode.agent.type as 'claude' | 'codex' | 'gemini',
+        prompt: fullPrompt,
+        options:
+          composedNode.agent.type === 'claude'
+            ? { model: composedNode.agent.model, thinkingBudget: composedNode.agent.thinkingBudget }
+            : composedNode.agent.type === 'codex'
+            ? { model: composedNode.agent.model, reasoningEffort: composedNode.agent.reasoningEffort }
+            : composedNode.agent.type === 'gemini'
+            ? { model: composedNode.agent.model }
+            : undefined,
+      });
+
+      if (result.status === 'error') {
+        failedNodes.add(nodeId);
+      } else {
+        nodeOutputs[nodeId] = result.output || '';
+        completedNodes.add(nodeId);
+      }
+    } catch {
+      failedNodes.add(nodeId);
+    }
+  }
+
+  // Collect outputs from terminal nodes
+  const terminalNodeIds = template.nodes
+    .filter((n) => !template.edges.some((e) => e.sourceId === n.id))
+    .map((n) => n.id);
+
+  const outputParts: string[] = [];
+  for (const output of template.outputs) {
+    if (nodeOutputs[output.sourceNodeId]) {
+      outputParts.push(`## ${output.name}\n${nodeOutputs[output.sourceNodeId]}`);
+    }
+  }
+
+  // If no explicit outputs, just concatenate terminal node outputs
+  if (outputParts.length === 0) {
+    for (const terminalId of terminalNodeIds) {
+      if (nodeOutputs[terminalId]) {
+        outputParts.push(nodeOutputs[terminalId]);
+      }
+    }
+  }
+
+  const anyFailed = failedNodes.size > 0;
+  const allCompleted = completedNodes.size === template.nodes.length;
+
+  return {
+    output: outputParts.join('\n\n---\n\n'),
+    status: allCompleted ? 'completed' : 'failed',
+    error: anyFailed ? `${failedNodes.size} sub-nodes failed` : undefined,
+  };
+}
+
+/**
+ * Topological sort for sub-DAG (without affecting project state)
+ */
+function topologicalSortSubDAG(
+  nodes: { id: string }[],
+  edges: { sourceId: string; targetId: string }[]
+): string[] {
+  const inDegree: Record<string, number> = {};
+  const adjacency: Record<string, string[]> = {};
+
+  nodes.forEach((node) => {
+    inDegree[node.id] = 0;
+    adjacency[node.id] = [];
+  });
+
+  edges.forEach((edge) => {
+    adjacency[edge.sourceId].push(edge.targetId);
+    inDegree[edge.targetId]++;
+  });
+
+  const queue: string[] = [];
+  const result: string[] = [];
+
+  Object.entries(inDegree).forEach(([nodeId, degree]) => {
+    if (degree === 0) queue.push(nodeId);
+  });
+
+  while (queue.length > 0) {
+    const nodeId = queue.shift()!;
+    result.push(nodeId);
+
+    adjacency[nodeId].forEach((neighbor) => {
+      inDegree[neighbor]--;
+      if (inDegree[neighbor] === 0) {
+        queue.push(neighbor);
+      }
+    });
+  }
+
+  return result;
+}
+
 // ========== NODE EXECUTION ==========
 
 /**
@@ -440,12 +716,50 @@ export async function executeNodeNew(
     // Update session to running
     store.setSessionStatus(sessionId, 'running');
 
-    // Execute via API
-    const result = await executeAgent({
-      executor: node.agent.type,
-      prompt: fullPrompt,
-      options: node.agent.model ? { model: node.agent.model } : undefined,
-    });
+    // Execute based on agent type
+    let result: { status: string; output?: string; error?: string };
+
+    if (node.agent.type === 'composed') {
+      // Execute composed agent (sub-DAG)
+      const template = store.agentLibrary[node.agent.agentId] as ComposedAgentTemplate;
+      if (!template || template.kind !== 'composed') {
+        throw new Error(`Composed agent template not found: ${node.agent.agentId}`);
+      }
+      const composedResult = await executeComposedAgent(
+        template,
+        compiledContext,
+        project.location
+      );
+      result = {
+        status: composedResult.status === 'completed' ? 'success' : 'error',
+        output: composedResult.output,
+        error: composedResult.error,
+      };
+    } else {
+      // Execute primitive agent via API
+      const options =
+        node.agent.type === 'claude'
+          ? {
+              model: node.agent.model,
+              thinkingBudget: node.agent.thinkingBudget,
+            }
+          : node.agent.type === 'codex'
+          ? {
+              model: node.agent.model,
+              reasoningEffort: node.agent.reasoningEffort,
+            }
+          : node.agent.type === 'gemini'
+          ? {
+              model: node.agent.model,
+            }
+          : undefined;
+
+      result = await executeAgent({
+        executor: node.agent.type,
+        prompt: fullPrompt,
+        options,
+      });
+    }
 
     if (result.status === 'error') {
       throw new Error(result.error || 'Execution failed');
@@ -459,8 +773,8 @@ export async function executeNodeNew(
       store.setDeliverableStatus(sessionId, d.id, 'produced');
     }
 
-    // Run checks
-    const checkResults = await runAllChecks(node, sessionId, project.location);
+    // Run checks (pass the output for LLM critic checks)
+    const checkResults = await runAllChecks(node, sessionId, project.location, result.output);
 
     if (checkResults.needsHumanApproval) {
       store.setSessionStatus(sessionId, 'awaiting_approval');
