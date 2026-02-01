@@ -1,6 +1,12 @@
-// API client - uses Next.js API routes (no separate backend needed)
+/**
+ * API utilities for Orchestra
+ *
+ * This file provides utility functions for execution backends.
+ * The actual API calls are made via tauri-api.ts using Tauri IPC.
+ */
 
 import type { ExecutionConfig, ExecutionBackend } from './types';
+import * as tauriApi from './tauri-api';
 
 export interface ExecuteRequest {
   executor: 'claude' | 'codex' | 'gemini';
@@ -35,16 +41,37 @@ export interface SessionStatusResponse {
 }
 
 /**
- * Execute an agent command
+ * Execute an agent command via Tauri IPC
  */
 export async function executeAgent(request: ExecuteRequest): Promise<ExecuteResponse> {
-  const response = await fetch('/api/execute', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
-  });
+  if (!request.projectId || !request.nodeId) {
+    return {
+      status: 'error',
+      error: 'projectId and nodeId are required',
+    };
+  }
 
-  return response.json();
+  try {
+    const response = await tauriApi.executeNode({
+      projectId: request.projectId,
+      nodeId: request.nodeId,
+      executor: request.executor,
+      prompt: request.prompt,
+      options: request.options,
+      projectPath: request.projectPath,
+      executionConfig: request.executionConfig,
+    });
+
+    return {
+      status: 'running',
+      sessionId: response.sessionId,
+    };
+  } catch (error) {
+    return {
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 /**
@@ -52,19 +79,38 @@ export async function executeAgent(request: ExecuteRequest): Promise<ExecuteResp
  */
 export async function getSessionStatus(
   sessionId: string,
-  backend: ExecutionBackend
+  _backend: ExecutionBackend
 ): Promise<SessionStatusResponse> {
-  const params = new URLSearchParams({ sessionId, backend });
-  const response = await fetch(`/api/execute?${params}`, {
-    method: 'GET',
-  });
+  try {
+    const session = await tauriApi.getSession(sessionId);
 
-  return response.json();
+    if (!session) {
+      return {
+        status: 'unknown',
+        sessionId,
+      };
+    }
+
+    const output = await tauriApi.getSessionOutput(sessionId);
+
+    return {
+      status: session.status === 'running' ? 'running' :
+             session.status === 'completed' || session.status === 'failed' ? 'stopped' :
+             'unknown',
+      output: output || undefined,
+      sessionId,
+    };
+  } catch (error) {
+    return {
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      sessionId,
+    };
+  }
 }
 
 /**
  * Poll for session completion
- * Returns the final result when the session stops
  */
 export async function waitForSession(
   sessionId: string,
@@ -76,7 +122,7 @@ export async function waitForSession(
   }
 ): Promise<ExecuteResponse> {
   const pollInterval = options?.pollIntervalMs || 2000;
-  const maxWait = options?.maxWaitMs || 30 * 60 * 1000; // 30 minutes default
+  const maxWait = options?.maxWaitMs || 30 * 60 * 1000;
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxWait) {
@@ -92,22 +138,26 @@ export async function waitForSession(
       };
     }
 
-    // Report progress if callback provided
     if (options?.onProgress && status.output) {
       options.onProgress(status.output);
     }
 
-    // Wait before next poll
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
   }
 
-  // Timeout
   return {
     status: 'error',
     error: `Session timed out after ${maxWait / 1000} seconds`,
     sessionId,
     backend,
   };
+}
+
+/**
+ * Stop an execution
+ */
+export async function stopExecution(sessionId: string): Promise<void> {
+  await tauriApi.stopExecution(sessionId);
 }
 
 /**
@@ -166,7 +216,7 @@ export function getBackendCapabilities(backend: ExecutionBackend): {
     remote: {
       isolated: true,
       interactive: true,
-      gpu: true, // Depends on VM
+      gpu: true,
       autoscale: false,
       surviveDisconnect: true,
     },

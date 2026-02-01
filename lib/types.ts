@@ -1,3 +1,12 @@
+// ========== SYNC METADATA ==========
+
+export interface SyncMeta {
+  syncVersion: number;
+  syncedAt: number | null;
+  deviceId: string;
+  deleted: boolean;
+}
+
 // ========== AGENT CONFIG ==========
 
 export type AgentType = 'claude' | 'codex' | 'gemini' | 'composed';
@@ -21,7 +30,7 @@ export type GeminiConfig = {
 
 export type ComposedAgentConfig = {
   type: 'composed';
-  agentId: string; // References agent library
+  agentId: string;
 };
 
 export type AgentConfig = ClaudeConfig | CodexConfig | GeminiConfig | ComposedAgentConfig;
@@ -42,7 +51,6 @@ export type Deliverable =
   | { type: 'pr'; repo: string; id: string }
   | { type: 'edit'; url: string; id: string };
 
-// Helper type for creating deliverables (without id)
 export type DeliverableInput =
   | { type: 'file'; path: string }
   | { type: 'response'; description: string }
@@ -53,8 +61,8 @@ export type DeliverableInput =
 
 export interface BaseCheck {
   id: string;
-  autoRetry?: boolean; // If true, tell agent to fix and retry (default: false)
-  maxRetries?: number; // Max retry attempts (default: 3)
+  autoRetry?: boolean;
+  maxRetries?: number;
 }
 
 export type Check =
@@ -66,25 +74,24 @@ export type Check =
       type: 'llm_critic';
       criticAgent: AgentType;
       criteria: string;
-      threshold?: number; // 0-100, default 70
-      addToContext?: boolean; // Add critique to context on retry
+      threshold?: number;
+      addToContext?: boolean;
     })
   | (BaseCheck & {
       type: 'test_runner';
       framework: 'npm' | 'pytest' | 'jest' | 'cargo' | 'go' | 'custom';
-      command?: string; // Required for 'custom'
+      command?: string;
       testPattern?: string;
     })
   | (BaseCheck & {
       type: 'eval_baseline';
       metric: 'duration' | 'memory' | 'accuracy' | 'custom';
       baseline: number;
-      tolerance: number; // Percentage
+      tolerance: number;
       command?: string;
       evaluator?: string;
     });
 
-// Helper type for creating checks (without id)
 export type CheckInput =
   | { type: 'file_exists'; path: string; autoRetry?: boolean; maxRetries?: number }
   | { type: 'command'; cmd: string; autoRetry?: boolean; maxRetries?: number }
@@ -126,32 +133,14 @@ export interface Node {
   id: string;
   title: string;
   description: string;
-
-  // Visual position
   position: { x: number; y: number };
-
-  // Agent assignment
   agent: AgentConfig;
-
-  // What to tell the agent
   prompt: string;
-
-  // What files/resources the agent should work with
   context: ContextRef[];
-
-  // What the node must produce
   deliverables: Deliverable[];
-
-  // How we verify success
   checks: Check[];
-
-  // Status tracking
   status: NodeStatus;
-
-  // Reference to the running/completed session
   sessionId: string | null;
-
-  // Execution backend configuration (overrides project default)
   executionConfig?: ExecutionConfig;
 }
 
@@ -161,9 +150,7 @@ export interface Edge {
   id: string;
   sourceId: string;
   targetId: string;
-
-  // Optional: specify WHICH deliverable flows through this edge
-  sourceDeliverable?: string; // deliverable id - if omitted, all deliverables available
+  sourceDeliverable?: string;
 }
 
 // ========== SESSION ==========
@@ -179,38 +166,25 @@ export interface Session {
   id: string;
   nodeId: string;
   tmuxSessionName: string;
-
-  // Agent running in this session
   agentType: AgentType;
   agentPid: number | null;
-
-  // Status
   status: SessionStatus;
-
-  // Deliverable tracking
   deliverablesStatus: Record<string, 'pending' | 'produced'>;
-
-  // Check results
   checkResults: Record<string, 'pending' | 'passed' | 'failed'>;
-
-  // Retry tracking
   retryAttempts: Record<string, number>;
-
-  // Timing
   startedAt: number;
   completedAt: number | null;
-
-  // Execution backend info (for attach/monitoring)
   backend?: ExecutionBackend;
   attachCommand?: string;
   containerId?: string;
-
-  // Sandbox info
   sandboxInfo?: {
     worktreePath: string;
     branchName: string;
     prUrl?: string;
   };
+  // NEW: For stuck detection
+  lastHeartbeat?: number | null;
+  executingDeviceId?: string;
 }
 
 // ========== PROJECT CONTEXT ==========
@@ -221,10 +195,9 @@ export type Resource =
   | { type: 'document'; content: string; name: string };
 
 export interface ProjectContext {
-  // User-provided background info, preferences, files, etc.
   resources: Resource[];
-  notes: string; // Freeform text context
-  variables: Record<string, unknown>; // Key-value pairs
+  notes: string;
+  variables: Record<string, unknown>;
 }
 
 // ========== PROJECT ==========
@@ -233,20 +206,16 @@ export interface Project {
   id: string;
   name: string;
   description: string;
-  location?: string; // Project directory path
-
-  // Shared context all nodes can access
+  location?: string;
   context: ProjectContext;
-
-  // The DAG
   nodes: Node[];
   edges: Edge[];
-
-  // Default execution backend for all nodes (can be overridden per-node)
   defaultExecutionConfig?: ExecutionConfig;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
-// ========== NODE RUN (Execution Record) ==========
+// ========== NODE RUN ==========
 
 export interface CompiledContext {
   files: string[];
@@ -259,21 +228,13 @@ export interface NodeRun {
   id: string;
   nodeId: string;
   projectId: string;
-
-  // What was sent to the agent
   compiledContext: CompiledContext;
   prompt: string;
-
-  // Agent details
   agentType: AgentType;
-  agentCommand: string; // The actual CLI command used
-
-  // Result
+  agentCommand: string;
   status: 'running' | 'completed' | 'failed';
   output: string | null;
   error: string | null;
-
-  // Timing
   startedAt: number;
   completedAt: number | null;
 }
@@ -294,7 +255,7 @@ export interface BaseAgentTemplate {
   id: string;
   name: string;
   description: string;
-  category?: string; // 'research', 'code', 'analysis', etc.
+  category?: string;
   createdAt: number;
 }
 
@@ -304,7 +265,6 @@ export interface PrimitiveAgentTemplate extends BaseAgentTemplate {
   defaultConfig: Partial<ClaudeConfig | CodexConfig | GeminiConfig>;
 }
 
-// ComposedNode = Node without position/status/sessionId (the pure logic)
 export interface ComposedNode {
   id: string;
   title: string;
@@ -350,7 +310,6 @@ export interface AgentPreset {
 }
 
 export const AGENT_PRESETS: AgentPreset[] = [
-  // Claude presets
   {
     id: 'claude-sonnet',
     label: 'Claude Sonnet',
@@ -372,7 +331,6 @@ export const AGENT_PRESETS: AgentPreset[] = [
     group: 'Claude',
     config: { type: 'claude', model: 'haiku' },
   },
-  // Codex presets
   {
     id: 'codex-default',
     label: 'Codex',
@@ -394,7 +352,6 @@ export const AGENT_PRESETS: AgentPreset[] = [
     group: 'Codex',
     config: { type: 'codex', reasoningEffort: 'xhigh' },
   },
-  // Gemini presets
   {
     id: 'gemini-pro',
     label: 'Gemini Pro',
@@ -414,11 +371,11 @@ export const AGENT_PRESETS: AgentPreset[] = [
 // ========== EXECUTION BACKENDS ==========
 
 export type ExecutionBackend =
-  | 'local'              // spawn() directly - fastest, no isolation
-  | 'docker'             // docker run, wait for completion - isolated
-  | 'docker-interactive' // docker run + tmux - can attach/detach
-  | 'remote'             // SSH to VM + docker - always-on, mobile access
-  | 'modal';             // Modal serverless - GPU, auto-scaling
+  | 'local'
+  | 'docker'
+  | 'docker-interactive'
+  | 'remote'
+  | 'modal';
 
 export interface DockerMount {
   hostPath: string;
@@ -427,43 +384,43 @@ export interface DockerMount {
 }
 
 export interface DockerConfig {
-  image?: string;  // Default: 'orchestra-agent:full'
+  image?: string;
   mounts?: DockerMount[];
   env?: Record<string, string>;
   resources?: {
-    memory?: string;  // e.g., '4g'
-    cpus?: string;    // e.g., '2'
+    memory?: string;
+    cpus?: string;
   };
   network?: string;
 }
 
 export interface RemoteConfig {
   host: string;
-  user?: string;       // Default: 'root'
-  keyPath?: string;    // SSH key path
-  port?: number;       // Default: 22
+  user?: string;
+  keyPath?: string;
+  port?: number;
 }
 
 export interface ModalConfig {
-  functionName?: string;  // Default: 'run_agent'
+  functionName?: string;
   gpu?: 'T4' | 'A10G' | 'A100' | 'H100';
-  timeout?: number;       // Max runtime in seconds
-  memory?: number;        // Memory in MB
+  timeout?: number;
+  memory?: number;
 }
 
 export interface InteractiveConfig {
-  sessionName?: string;   // tmux session name - auto-generated if not provided
-  timeout?: number;       // Max runtime before auto-kill (ms)
+  sessionName?: string;
+  timeout?: number;
 }
 
 export interface SandboxConfig {
-  enabled: boolean;              // default: true
-  type: 'git-worktree';          // future: 'docker-volume', 'copy'
-  branchPrefix?: string;         // default: 'agent/'
-  createPR?: boolean;            // default: true
-  prBaseBranch?: string;         // default: 'main'
-  cleanupOnSuccess?: boolean;    // default: true
-  keepOnFailure?: boolean;       // default: true (for debugging)
+  enabled: boolean;
+  type: 'git-worktree';
+  branchPrefix?: string;
+  createPR?: boolean;
+  prBaseBranch?: string;
+  cleanupOnSuccess?: boolean;
+  keepOnFailure?: boolean;
 }
 
 export interface ExecutionConfig {
@@ -479,27 +436,82 @@ export interface ExecutionResult {
   status: 'done' | 'running' | 'error';
   output?: string;
   error?: string;
-
-  // For interactive backends
   sessionId?: string;
-  attachCommand?: string;  // e.g., "docker exec -it abc123 tmux attach"
-
-  // Metadata
+  attachCommand?: string;
   backend?: ExecutionBackend;
-  duration?: number;  // Execution time in ms
+  duration?: number;
 }
 
 export interface ExecuteRequest {
-  // What to execute
   executor: 'claude' | 'codex' | 'gemini';
   prompt: string;
   options?: Record<string, unknown>;
-
-  // Where to execute
   executionConfig?: ExecutionConfig;
-
-  // Context
   projectPath?: string;
   projectId?: string;
   nodeId?: string;
+}
+
+// ========== NEW: DEVICE ==========
+
+export interface Device {
+  id: string;
+  name: string;
+  platform: 'macos' | 'ios';
+  pushToken: string | null;
+  capabilities: ExecutionBackend[];
+}
+
+// ========== NEW: CODE TODO ==========
+
+export interface CodeTodo {
+  id: string;
+  projectId: string;
+  filePath: string;
+  lineNumber: number;
+  content: string;
+  type: 'TODO' | 'FIXME' | 'HACK';
+  tracked: boolean;
+  linkedNodeId?: string;
+}
+
+// ========== NEW: NOTIFICATION EVENT ==========
+
+export interface NotificationEvent {
+  id: string;
+  type: 'human_input_needed' | 'agent_stuck' | 'retry_exhausted' | 'execution_failed';
+  projectId: string;
+  nodeId?: string;
+  message: string;
+  priority: 'normal' | 'high' | 'urgent';
+  acknowledged: boolean;
+}
+
+// ========== NAVIGATION ==========
+
+export type AppView = 'dashboard' | 'canvas' | 'agents' | 'runs' | 'settings';
+
+// ========== SYSTEM STATUS ==========
+
+export interface SystemStatus {
+  dockerAvailable: boolean;
+  claudeCliDetected: boolean;
+  codexCliDetected: boolean;
+  geminiCliDetected: boolean;
+  lastChecked: number | null;
+}
+
+// ========== RUN HISTORY ==========
+
+export interface RunHistoryEntry {
+  id: string;
+  projectId: string;
+  projectName: string;
+  startedAt: number;
+  completedAt: number | null;
+  status: 'running' | 'completed' | 'failed';
+  nodesTotal: number;
+  nodesCompleted: number;
+  nodesFailed: number;
+  duration: number | null;
 }

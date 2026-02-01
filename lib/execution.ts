@@ -49,7 +49,7 @@ const NODE_EXECUTION_TIMEOUT_MS = 4 * 60 * 1000;
  */
 export function compileContext(
   node: Node,
-  project: Project,
+  _project: Project,
   nodeOutputs: Record<string, string>
 ): CompiledContext {
   const compiled: CompiledContext = {
@@ -67,12 +67,13 @@ export function compileContext(
       case 'url':
         compiled.urls.push(ref.url);
         break;
-      case 'parent_output':
+      case 'parent_output': {
         const output = nodeOutputs[ref.nodeId];
         if (output) {
           compiled.parentOutputs.push({ nodeId: ref.nodeId, content: output });
         }
         break;
+      }
       case 'markdown':
         compiled.markdownContent.push(ref.content);
         break;
@@ -848,6 +849,18 @@ export async function executeNodeNew(
         nodeId: node.id,
       });
 
+      // Debug logging - remove after investigation
+      console.log('[Execution Debug] API response:', {
+        nodeId: node.id,
+        status: result.status,
+        hasOutput: !!result.output,
+        outputLength: result.output?.length,
+        outputPreview: result.output?.substring(0, 200),
+        error: result.error,
+        backend: executionConfig.backend,
+        sessionId: result.sessionId,
+      });
+
       // Store attach info if interactive backend
       if (isInteractiveBackend(executionConfig.backend) && result.sessionId) {
         store.setSessionAttachInfo(sessionId, {
@@ -868,6 +881,12 @@ export async function executeNodeNew(
     }
 
     // Update run with output
+    console.log('[Execution Debug] Storing output:', {
+      runId,
+      nodeId: node.id,
+      hasOutput: !!result.output,
+      outputLength: result.output?.length,
+    });
     store.completeNodeRun(runId, 'completed', result.output);
 
     // Mark deliverables as produced (simplified - in reality would verify)

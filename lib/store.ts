@@ -1,6 +1,13 @@
+/**
+ * Orchestra Store - Zustand with Tauri IPC
+ *
+ * This store manages all application state and syncs with the Rust backend
+ * via Tauri IPC commands. It maintains a local cache for fast UI updates
+ * while persisting changes to SQLite via the backend.
+ */
+
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import { persist, createJSONStorage } from 'zustand/middleware';
 import type {
   Project,
   Node,
@@ -19,7 +26,11 @@ import type {
   AgentTemplate,
   ComposedAgentTemplate,
   ExecutionBackend,
+  AppView,
+  SystemStatus,
+  RunHistoryEntry,
 } from './types';
+import * as api from './tauri-api';
 
 // ========== STATE INTERFACE ==========
 
@@ -37,9 +48,29 @@ interface OrchestraState {
   terminalModalOpen: boolean;
   terminalSessionId: string | null;
 
+  // Navigation
+  currentView: AppView;
+  setView: (view: AppView) => void;
+
+  // System Status
+  systemStatus: SystemStatus;
+  checkSystemStatus: () => Promise<void>;
+
+  // Run History
+  runHistory: RunHistoryEntry[];
+  addRunHistoryEntry: (entry: Omit<RunHistoryEntry, 'id'>) => string;
+  updateRunHistoryEntry: (id: string, updates: Partial<RunHistoryEntry>) => void;
+
+  // Loading states
+  isLoading: boolean;
+  isInitialized: boolean;
+
+  // ========== INITIALIZATION ==========
+  initialize: () => Promise<void>;
+
   // ========== PROJECT ACTIONS ==========
-  createProject: (name: string, description?: string, location?: string) => string;
-  deleteProject: (id: string) => void;
+  createProject: (name: string, description?: string, location?: string) => Promise<string>;
+  deleteProject: (id: string) => Promise<void>;
   updateProject: (id: string, updates: Partial<Omit<Project, 'id' | 'nodes' | 'edges'>>) => void;
   addProjectResource: (projectId: string, resource: Resource) => void;
   removeProjectResource: (projectId: string, resourceIndex: number) => void;
@@ -85,9 +116,7 @@ interface OrchestraState {
   updateNodeRun: (runId: string, updates: Partial<NodeRun>) => void;
   completeNodeRun: (runId: string, status: 'completed' | 'failed', output?: string, error?: string) => void;
   appendNodeOutput: (projectId: string, nodeId: string, chunk: string) => void;
-
-  // Track active node runs for live output streaming
-  activeNodeRuns: Record<string, string>; // nodeId -> runId
+  activeNodeRuns: Record<string, string>;
 
   // ========== UI ACTIONS ==========
   selectProject: (id: string | null) => void;
@@ -104,13 +133,14 @@ interface OrchestraState {
   ) => string;
   updateAgentTemplate: (id: string, updates: Partial<AgentTemplate>) => void;
   deleteAgentTemplate: (id: string) => void;
+
+  // ========== SYNC ==========
+  syncProject: (projectId: string) => Promise<void>;
 }
 
 // ========== UTILITIES ==========
 
 const generateId = () => Math.random().toString(36).substring(2, 15);
-
-// ========== STORE ==========
 
 // Default primitive agent templates
 const defaultAgentLibrary: Record<string, AgentTemplate> = {
@@ -146,9 +176,10 @@ const defaultAgentLibrary: Record<string, AgentTemplate> = {
   },
 };
 
+// ========== STORE ==========
+
 export const useOrchestraStore = create<OrchestraState>()(
-  persist(
-    immer((set) => ({
+  immer((set, get) => ({
     // Initial State
     projects: {},
     sessions: {},
@@ -160,48 +191,100 @@ export const useOrchestraStore = create<OrchestraState>()(
     terminalModalOpen: false,
     terminalSessionId: null,
     activeNodeRuns: {},
+    isLoading: false,
+    isInitialized: false,
+
+    // Navigation
+    currentView: 'dashboard',
+
+    // System Status
+    systemStatus: {
+      dockerAvailable: false,
+      claudeCliDetected: false,
+      codexCliDetected: false,
+      geminiCliDetected: false,
+      lastChecked: null,
+    },
+
+    // Run History
+    runHistory: [],
+
+    // ========== INITIALIZATION ==========
+
+    initialize: async () => {
+      if (get().isInitialized) return;
+
+      set((state) => {
+        state.isLoading = true;
+      });
+
+      if (!api.isTauri()) {
+        set((state) => {
+          state.isLoading = false;
+          state.isInitialized = true;
+        });
+        return;
+      }
+
+      try {
+        // Load projects from backend
+        const projects = await api.listProjects();
+        const projectsMap: Record<string, Project> = {};
+        for (const project of projects) {
+          projectsMap[project.id] = project;
+        }
+
+        // Load sessions
+        const sessions = await api.listSessions();
+        const sessionsMap: Record<string, Session> = {};
+        for (const session of sessions) {
+          sessionsMap[session.id] = session as Session;
+        }
+
+        set((state) => {
+          state.projects = projectsMap;
+          state.sessions = sessionsMap;
+          state.isLoading = false;
+          state.isInitialized = true;
+        });
+
+        // Set up event listeners for execution output
+        api.onExecutionOutput((event) => {
+          get().appendNodeOutput('', event.nodeId, event.chunk);
+        });
+
+        api.onExecutionComplete((event) => {
+          set((state) => {
+            if (state.sessions[event.sessionId]) {
+              state.sessions[event.sessionId].status = event.status as SessionStatus;
+              if (event.status === 'completed' || event.status === 'failed') {
+                state.sessions[event.sessionId].completedAt = Date.now();
+              }
+            }
+          });
+        });
+      } catch (error) {
+        console.error('Failed to initialize store:', error);
+        set((state) => {
+          state.isLoading = false;
+          state.isInitialized = true;
+        });
+      }
+    },
 
     // ========== PROJECT ACTIONS ==========
 
-    createProject: (name, description = '', location) => {
-      const id = generateId();
+    createProject: async (name, description = '', location) => {
+      const project = await api.createProject(name, description, location);
       set((state) => {
-        state.projects[id] = {
-          id,
-          name,
-          description,
-          location,
-          context: {
-            resources: [],
-            notes: '',
-            variables: {},
-          },
-          nodes: [],
-          edges: [],
-        };
+        state.projects[project.id] = project;
       });
-      return id;
+      return project.id;
     },
 
-    deleteProject: (id) => {
+    deleteProject: async (id) => {
+      await api.deleteProject(id);
       set((state) => {
-        // Clean up sessions associated with project nodes
-        const project = state.projects[id];
-        if (project) {
-          const nodeIds = new Set(project.nodes.map((n) => n.id));
-          // Remove sessions for project nodes
-          for (const sessionId of Object.keys(state.sessions)) {
-            if (nodeIds.has(state.sessions[sessionId].nodeId)) {
-              delete state.sessions[sessionId];
-            }
-          }
-          // Remove node runs for project
-          for (const runId of Object.keys(state.nodeRuns)) {
-            if (state.nodeRuns[runId].projectId === id) {
-              delete state.nodeRuns[runId];
-            }
-          }
-        }
         delete state.projects[id];
         if (state.selectedProjectId === id) {
           state.selectedProjectId = null;
@@ -216,6 +299,11 @@ export const useOrchestraStore = create<OrchestraState>()(
           Object.assign(state.projects[id], updates);
         }
       });
+      // Sync to backend
+      const project = get().projects[id];
+      if (project) {
+        api.updateProject(project).catch(console.error);
+      }
     },
 
     addProjectResource: (projectId, resource) => {
@@ -225,6 +313,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           project.context.resources.push(resource);
         }
       });
+      get().syncProject(projectId);
     },
 
     removeProjectResource: (projectId, resourceIndex) => {
@@ -234,6 +323,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           project.context.resources.splice(resourceIndex, 1);
         }
       });
+      get().syncProject(projectId);
     },
 
     setProjectNotes: (projectId, notes) => {
@@ -243,6 +333,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           project.context.notes = notes;
         }
       });
+      get().syncProject(projectId);
     },
 
     setProjectVariable: (projectId, key, value) => {
@@ -252,6 +343,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           project.context.variables[key] = value;
         }
       });
+      get().syncProject(projectId);
     },
 
     // ========== NODE ACTIONS ==========
@@ -269,6 +361,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           });
         }
       });
+      get().syncProject(projectId);
       return id;
     },
 
@@ -282,19 +375,17 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
     },
 
     deleteNode: (projectId, nodeId) => {
       set((state) => {
         const project = state.projects[projectId];
         if (project) {
-          // Remove node
           project.nodes = project.nodes.filter((n) => n.id !== nodeId);
-          // Remove edges connected to this node
           project.edges = project.edges.filter(
             (e) => e.sourceId !== nodeId && e.targetId !== nodeId
           );
-          // Clean up parent_output references in other nodes
           for (const node of project.nodes) {
             node.context = node.context.filter(
               (ctx) => !(ctx.type === 'parent_output' && ctx.nodeId === nodeId)
@@ -305,6 +396,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
     },
 
     setNodeStatus: (projectId, nodeId, status) => {
@@ -329,6 +421,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
     },
 
     removeNodeContext: (projectId, nodeId, contextIndex) => {
@@ -341,6 +434,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
     },
 
     addNodeDeliverable: (projectId, nodeId, deliverable) => {
@@ -354,6 +448,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
       return id;
     },
 
@@ -365,7 +460,6 @@ export const useOrchestraStore = create<OrchestraState>()(
           if (node) {
             node.deliverables = node.deliverables.filter((d) => d.id !== deliverableId);
           }
-          // Also clear edge references to this deliverable
           for (const edge of project.edges) {
             if (edge.sourceDeliverable === deliverableId) {
               edge.sourceDeliverable = undefined;
@@ -373,6 +467,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
     },
 
     addNodeCheck: (projectId, nodeId, check) => {
@@ -386,6 +481,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
       return id;
     },
 
@@ -399,6 +495,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
     },
 
     updateNodeCheck: (projectId, nodeId, checkId, updates) => {
@@ -414,6 +511,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
     },
 
     // ========== EDGE ACTIONS ==========
@@ -423,7 +521,6 @@ export const useOrchestraStore = create<OrchestraState>()(
       set((state) => {
         const project = state.projects[projectId];
         if (project) {
-          // Check if edge already exists
           const exists = project.edges.some(
             (e) => e.sourceId === edge.sourceId && e.targetId === edge.targetId
           );
@@ -432,6 +529,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
       return id;
     },
 
@@ -442,6 +540,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           project.edges = project.edges.filter((e) => e.id !== edgeId);
         }
       });
+      get().syncProject(projectId);
     },
 
     setEdgeDeliverable: (projectId, edgeId, deliverableId) => {
@@ -454,6 +553,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           }
         }
       });
+      get().syncProject(projectId);
     },
 
     // ========== SESSION ACTIONS ==========
@@ -554,11 +654,7 @@ export const useOrchestraStore = create<OrchestraState>()(
     createNodeRun: (run) => {
       const id = generateId();
       set((state) => {
-        state.nodeRuns[id] = {
-          ...run,
-          id,
-        };
-        // Track active run for live output streaming
+        state.nodeRuns[id] = { ...run, id };
         state.activeNodeRuns[run.nodeId] = id;
       });
       return id;
@@ -583,7 +679,6 @@ export const useOrchestraStore = create<OrchestraState>()(
           if (error !== undefined) {
             state.nodeRuns[runId].error = error;
           }
-          // Clear from active runs when completed
           const nodeId = state.nodeRuns[runId].nodeId;
           if (state.activeNodeRuns[nodeId] === runId) {
             delete state.activeNodeRuns[nodeId];
@@ -592,11 +687,10 @@ export const useOrchestraStore = create<OrchestraState>()(
       });
     },
 
-    appendNodeOutput: (projectId, nodeId, chunk) => {
+    appendNodeOutput: (_projectId, nodeId, chunk) => {
       set((state) => {
         const runId = state.activeNodeRuns[nodeId];
         if (!runId || !state.nodeRuns[runId]) return;
-
         const currentOutput = state.nodeRuns[runId].output || '';
         state.nodeRuns[runId].output = currentOutput + chunk;
       });
@@ -637,6 +731,52 @@ export const useOrchestraStore = create<OrchestraState>()(
       });
     },
 
+    // ========== NAVIGATION ACTIONS ==========
+
+    setView: (view) => {
+      set((state) => {
+        state.currentView = view;
+      });
+    },
+
+    // ========== SYSTEM STATUS ACTIONS ==========
+
+    checkSystemStatus: async () => {
+      try {
+        // Dynamic import to avoid issues in non-Tauri environments
+        const { checkSystemStatus } = await import('./system-check');
+        const status = await checkSystemStatus();
+        set((state) => {
+          state.systemStatus = status;
+        });
+      } catch (error) {
+        console.error('Failed to check system status:', error);
+      }
+    },
+
+    // ========== RUN HISTORY ACTIONS ==========
+
+    addRunHistoryEntry: (entry) => {
+      const id = generateId();
+      set((state) => {
+        state.runHistory.unshift({ ...entry, id });
+        // Keep only last 100 entries
+        if (state.runHistory.length > 100) {
+          state.runHistory = state.runHistory.slice(0, 100);
+        }
+      });
+      return id;
+    },
+
+    updateRunHistoryEntry: (id, updates) => {
+      set((state) => {
+        const index = state.runHistory.findIndex((e) => e.id === id);
+        if (index !== -1) {
+          Object.assign(state.runHistory[index], updates);
+        }
+      });
+    },
+
     // ========== AGENT LIBRARY ACTIONS ==========
 
     createComposedAgentFromProject: (projectId, name, options) => {
@@ -645,7 +785,6 @@ export const useOrchestraStore = create<OrchestraState>()(
         const project = state.projects[projectId];
         if (!project) return;
 
-        // Convert project nodes to composed nodes (strip position, status, sessionId)
         const composedNodes = project.nodes.map((node) => ({
           id: node.id,
           title: node.title,
@@ -656,7 +795,6 @@ export const useOrchestraStore = create<OrchestraState>()(
           checks: node.checks,
         }));
 
-        // Auto-detect inputs: non-parent_output contexts from root nodes
         const rootNodeIds = new Set(
           project.nodes
             .filter((n) => !project.edges.some((e) => e.targetId === n.id))
@@ -674,7 +812,6 @@ export const useOrchestraStore = create<OrchestraState>()(
               }))
           );
 
-        // Auto-detect outputs: deliverables from terminal nodes
         const terminalNodeIds = new Set(
           project.nodes
             .filter((n) => !project.edges.some((e) => e.sourceId === n.id))
@@ -724,39 +861,25 @@ export const useOrchestraStore = create<OrchestraState>()(
 
     deleteAgentTemplate: (id) => {
       set((state) => {
-        // Don't allow deleting default primitives
         if (!id.endsWith('-default')) {
           delete state.agentLibrary[id];
         }
       });
     },
-  })),
-    {
-      name: 'orchestra-storage',
-      storage: createJSONStorage(() => localStorage),
-      // Only persist essential data, not runtime state
-      partialize: (state) => ({
-        projects: state.projects,
-        agentLibrary: state.agentLibrary,
-        selectedProjectId: state.selectedProjectId,
-        agentHubMinimized: state.agentHubMinimized,
-      }),
-      // Merge persisted state with defaults on hydration
-      merge: (persistedState, currentState) => {
-        const persisted = persistedState as Partial<OrchestraState>;
-        return {
-          ...currentState,
-          projects: persisted.projects ?? currentState.projects,
-          agentLibrary: {
-            ...defaultAgentLibrary,
-            ...(persisted.agentLibrary ?? {}),
-          },
-          selectedProjectId: persisted.selectedProjectId ?? null,
-          agentHubMinimized: persisted.agentHubMinimized ?? false,
-        };
-      },
-    }
-  )
+
+    // ========== SYNC ==========
+
+    syncProject: async (projectId) => {
+      const project = get().projects[projectId];
+      if (project) {
+        try {
+          await api.updateProject(project);
+        } catch (error) {
+          console.error('Failed to sync project:', error);
+        }
+      }
+    },
+  }))
 );
 
 // ========== SELECTORS ==========
