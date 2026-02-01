@@ -40,7 +40,7 @@ export default function AgentNode(props: NodeProps<AgentFlowNode>) {
       </div>
 
       {node.prompt ? (
-        <div className="mt-2 max-h-[3.75rem] overflow-hidden text-ellipsis text-xs text-muted-foreground">
+        <div className="mt-2 max-h-[3.75rem] overflow-hidden text-xs text-muted-foreground whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
           {node.prompt}
         </div>
       ) : (

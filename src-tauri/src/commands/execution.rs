@@ -11,6 +11,7 @@ pub struct ExecuteNodeInput {
     pub session_id: Option<String>,
     pub node_id: String,
     pub agent: String,
+    pub model: Option<String>,
     pub prompt: String,
     pub cwd: Option<String>,
 }
@@ -112,7 +113,7 @@ pub async fn execute_node(
 ) -> Result<ExecuteNodeOutput, String> {
     let session_id = input.session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let mut child = executors::local::spawn_agent(&input.agent, &input.cwd)?;
+    let mut child = executors::local::spawn_agent(&input.agent, input.model.as_deref(), &input.cwd)?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin

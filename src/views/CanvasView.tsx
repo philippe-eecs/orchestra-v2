@@ -15,6 +15,9 @@ export default function CanvasView() {
 
   const [name, setName] = useState('My Project');
   const [desc, setDesc] = useState('');
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const projectList = useMemo(() => Object.values(projects).sort((a, b) => b.updatedAt - a.updatedAt), [projects]);
 
@@ -37,7 +40,7 @@ export default function CanvasView() {
             ))}
           </select>
 
-          <Dialog>
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
               <Button size="sm" variant="secondary">
                 New Project
@@ -51,19 +54,32 @@ export default function CanvasView() {
               <div className="space-y-3">
                 <div className="space-y-1">
                   <div className="text-xs text-muted-foreground">Name</div>
-                  <Input value={name} onChange={(e) => setName(e.target.value)} />
+                  <Input value={name} onChange={(e) => setName(e.target.value)} disabled={isCreating} />
                 </div>
                 <div className="space-y-1">
                   <div className="text-xs text-muted-foreground">Description</div>
-                  <Input value={desc} onChange={(e) => setDesc(e.target.value)} />
+                  <Input value={desc} onChange={(e) => setDesc(e.target.value)} disabled={isCreating} />
                 </div>
+                {error && <div className="text-sm text-destructive">{error}</div>}
                 <div className="flex justify-end gap-2">
                   <Button
-                    onClick={() => {
-                      void createProject({ name, description: desc });
+                    disabled={isCreating}
+                    onClick={async () => {
+                      setIsCreating(true);
+                      setError(null);
+                      try {
+                        await createProject({ name, description: desc });
+                        setDialogOpen(false);
+                        setName('My Project');
+                        setDesc('');
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : 'Failed to create project');
+                      } finally {
+                        setIsCreating(false);
+                      }
                     }}
                   >
-                    Create
+                    {isCreating ? 'Creating…' : 'Create'}
                   </Button>
                 </div>
               </div>

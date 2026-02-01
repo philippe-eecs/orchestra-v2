@@ -92,10 +92,11 @@ export async function executeNode(input: {
   sessionId?: string;
   nodeId: string;
   agent: AgentType;
+  model?: string;
   prompt: string;
   cwd?: string;
 }): Promise<{ sessionId: string }> {
-  if (isTauri()) return invoke<{ sessionId: string }>('execute_node', input);
+  if (isTauri()) return invoke<{ sessionId: string }>('execute_node', { input });
 
   const sessionId = input.sessionId ?? randomId();
   const header = `> (${input.agent}) executing node ${input.nodeId}\n\n`;

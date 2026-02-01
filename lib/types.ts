@@ -16,13 +16,12 @@ export interface Deliverable {
   description: string;
 }
 
-export interface Check {
-  id: string;
-  type: 'file_exists' | 'command' | 'human_approval';
-  config: Record<string, unknown>;
-  autoRetry?: boolean;
-  maxRetries?: number;
-}
+export type Check =
+  | { id: string; type: 'file_exists'; path: string; autoRetry?: boolean; maxRetries?: number }
+  | { id: string; type: 'command'; cmd: string; autoRetry?: boolean; maxRetries?: number }
+  | { id: string; type: 'contains'; path: string; pattern: string; autoRetry?: boolean; maxRetries?: number }
+  | { id: string; type: 'human_approval' }
+  | { id: string; type: 'test_runner'; framework: 'npm' | 'pytest' | 'jest' | 'cargo'; autoRetry?: boolean; maxRetries?: number };
 
 export type NodeStatus = 'pending' | 'running' | 'completed' | 'failed';
 

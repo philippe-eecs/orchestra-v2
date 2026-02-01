@@ -287,6 +287,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           sessionId,
           nodeId: node.id,
           agent: node.agent.type,
+          model: node.agent.model,
           prompt: node.prompt,
           cwd: project.location,
         });
