@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -28,12 +28,15 @@ export function PromptEditorModal({
 }: PromptEditorModalProps) {
   const [localPrompt, setLocalPrompt] = useState(initialPrompt);
 
-  // Reset local state when modal opens with new content
-  useEffect(() => {
-    if (open) {
-      setLocalPrompt(initialPrompt);
-    }
-  }, [open, initialPrompt]);
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (nextOpen) {
+        setLocalPrompt(initialPrompt);
+      }
+      onOpenChange(nextOpen);
+    },
+    [initialPrompt, onOpenChange]
+  );
 
   const handleSave = useCallback(() => {
     onSave(localPrompt);
@@ -60,7 +63,7 @@ export function PromptEditorModal({
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="max-w-4xl h-[80vh] flex flex-col"
         onKeyDown={handleKeyDown}

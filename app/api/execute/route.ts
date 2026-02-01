@@ -1,16 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { spawn } from 'child_process';
+import { execute, type ExecuteRequest } from '@/lib/executor';
+import type { ExecutionConfig } from '@/lib/types';
+import {
+  createSandbox,
+  finalizeSandbox,
+  cleanupSandbox,
+  isGitRepo,
+  type SandboxInfo,
+} from '@/lib/sandbox';
 
 // Whitelist of allowed executor types
 const ALLOWED_EXECUTORS = ['claude', 'codex', 'gemini'] as const;
-type ExecutorType = typeof ALLOWED_EXECUTORS[number];
-
-// Execution timeout (5 minutes)
-const EXECUTION_TIMEOUT_MS = 5 * 60 * 1000;
 
 export async function POST(request: NextRequest) {
+  let sandboxInfo: SandboxInfo | null = null;
+  let originalProjectPath: string | undefined;
+
   try {
-    const { executor, prompt, options } = await request.json();
+    const body = await request.json();
+    const { executor, prompt, options, executionConfig, projectPath, projectId, nodeId } = body;
 
     // Validate executor against whitelist
     if (!ALLOWED_EXECUTORS.includes(executor)) {
@@ -28,37 +36,93 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const args = buildCommand(executor as ExecutorType, prompt, options);
+    const config = executionConfig as ExecutionConfig | undefined;
+    const sandboxConfig = config?.sandbox;
+    originalProjectPath = projectPath;
 
-    try {
-      const output = await runCommand(args);
-      return NextResponse.json({ status: 'done', output });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-
-      // Gemini fallback for unavailable models
-      if (executor === 'gemini' && /Requested entity was not found/i.test(errorMessage)) {
-        const requestedModel = String(options?.model || 'gemini-3-pro-preview');
-        const fallbackModel = requestedModel.includes('flash')
-          ? 'gemini-2.5-flash'
-          : 'gemini-2.5-pro';
-
-        const fallbackArgs = buildCommand(
-          'gemini',
-          prompt,
-          { ...(options || {}), model: fallbackModel }
-        );
-        const output = await runCommand(fallbackArgs);
-        return NextResponse.json({
-          status: 'done',
-          output,
-          model: fallbackModel,
-          warning: `Requested model ${requestedModel} was unavailable; fell back to ${fallbackModel}.`,
-        });
+    // Setup sandbox if enabled
+    let effectiveProjectPath = projectPath;
+    if (sandboxConfig?.enabled && projectPath && nodeId) {
+      try {
+        const isRepo = await isGitRepo(projectPath);
+        if (isRepo) {
+          sandboxInfo = await createSandbox(projectPath, nodeId, sandboxConfig);
+          effectiveProjectPath = sandboxInfo.worktreePath;
+        }
+      } catch (error) {
+        console.warn('Failed to create sandbox:', error);
+        // Continue without sandbox
       }
-
-      throw error;
     }
+
+    // Build execute request
+    const executeRequest: ExecuteRequest = {
+      executor,
+      prompt,
+      options,
+      executionConfig: config,
+      projectPath: effectiveProjectPath,
+      projectId,
+      nodeId,
+    };
+
+    // Execute using the unified executor
+    const result = await execute(executeRequest);
+
+    // Return appropriate response based on result status
+    if (result.status === 'error') {
+      // Keep sandbox on failure for debugging
+      return NextResponse.json(
+        {
+          status: 'error',
+          error: result.error,
+          backend: result.backend,
+          duration: result.duration,
+          sandboxInfo: sandboxInfo ? {
+            worktreePath: sandboxInfo.worktreePath,
+            branchName: sandboxInfo.branchName,
+          } : undefined,
+        },
+        { status: 500 }
+      );
+    }
+
+    // Finalize sandbox if it was created
+    let sandboxResult: { prUrl?: string; hasChanges: boolean } | null = null;
+    if (sandboxInfo && sandboxConfig) {
+      try {
+        sandboxResult = await finalizeSandbox(
+          sandboxInfo.worktreePath,
+          sandboxInfo.branchName,
+          sandboxConfig
+        );
+
+        // Cleanup sandbox on success if configured
+        if (sandboxConfig.cleanupOnSuccess !== false && originalProjectPath) {
+          await cleanupSandbox(
+            originalProjectPath,
+            sandboxInfo.worktreePath,
+            sandboxInfo.branchName
+          );
+        }
+      } catch (error) {
+        console.warn('Failed to finalize sandbox:', error);
+      }
+    }
+
+    return NextResponse.json({
+      status: result.status,
+      output: result.output,
+      sessionId: result.sessionId,
+      attachCommand: result.attachCommand,
+      backend: result.backend,
+      duration: result.duration,
+      sandboxInfo: sandboxInfo ? {
+        worktreePath: sandboxInfo.worktreePath,
+        branchName: sandboxInfo.branchName,
+        prUrl: sandboxResult?.prUrl,
+      } : undefined,
+    });
   } catch (error) {
     return NextResponse.json(
       { status: 'error', error: String(error) },
@@ -67,94 +131,50 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function buildCommand(executor: ExecutorType, prompt: string, options?: Record<string, unknown>): string[] {
-  // Build command as array - no shell interpolation possible
-  switch (executor) {
-    case 'claude': {
-      const args = [
-        'claude',
-        '-p',
-        prompt,
-        '--output-format',
-        'text',
-        '--no-session-persistence',
-        '--permission-mode',
-        'dontAsk',
-        '--tools',
-        '',
-      ];
-      if (options?.model && typeof options.model === 'string') {
-        args.push('--model', options.model);
-      }
-      if (options?.thinkingBudget && typeof options.thinkingBudget === 'number') {
-        const budget = Math.floor(options.thinkingBudget);
-        args.push('--append-system-prompt', `Think for at most ${budget} tokens.`);
-      }
-      return args;
-    }
+// GET endpoint to check session status (for interactive backends)
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const sessionId = searchParams.get('sessionId');
+  const backend = searchParams.get('backend');
 
-    case 'codex': {
-      const args = ['codex', 'exec', '--skip-git-repo-check'];
-      const reasoning = options?.reasoningEffort ?? options?.reasoningLevel;
-      if (reasoning && ['low', 'medium', 'high', 'xhigh'].includes(String(reasoning))) {
-        args.push('-c', `reasoning.effort=${String(reasoning)}`);
-      }
-      if (options?.model && typeof options.model === 'string') {
-        args.push('-m', options.model);
-      }
-      args.push(prompt);
-      return args;
-    }
-
-    case 'gemini': {
-      // Validate model name - only allow alphanumeric, dashes, and dots
-      const modelRaw = options?.model || 'gemini-3-pro-preview';
-      const model = String(modelRaw).replace(/[^a-zA-Z0-9.-]/g, '');
-      return ['gemini', prompt, '-m', model, '-o', 'text'];
-    }
+  if (!sessionId) {
+    return NextResponse.json(
+      { status: 'error', error: 'sessionId is required' },
+      { status: 400 }
+    );
   }
-}
 
-function runCommand(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const [cmd, ...rest] = args;
+  try {
+    // Import dynamically to avoid issues if docker isn't available
+    if (backend === 'docker-interactive') {
+      const { isSessionRunning, getSessionOutput } = await import('@/lib/executors/docker-interactive');
+      const running = await isSessionRunning(sessionId);
+      const output = running ? await getSessionOutput(sessionId) : '';
 
-    // No shell: true - execute directly without shell interpolation
-    const proc = spawn(cmd, rest, {
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: EXECUTION_TIMEOUT_MS,
+      return NextResponse.json({
+        status: running ? 'running' : 'stopped',
+        output,
+        sessionId,
+      });
+    }
+
+    if (backend === 'remote') {
+      // Would need remote config to check status
+      return NextResponse.json({
+        status: 'unknown',
+        error: 'Remote session status check requires config',
+        sessionId,
+      });
+    }
+
+    return NextResponse.json({
+      status: 'error',
+      error: `Backend ${backend} does not support session status check`,
     });
-
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    // Set up timeout handling
-    const timeoutId = setTimeout(() => {
-      proc.kill('SIGTERM');
-      reject(new Error(`Execution timed out after ${EXECUTION_TIMEOUT_MS / 1000} seconds`));
-    }, EXECUTION_TIMEOUT_MS);
-
-    proc.on('close', (code) => {
-      clearTimeout(timeoutId);
-      if (code === 0) {
-        resolve(stdout);
-      } else {
-        reject(new Error(stderr || `Process exited with code ${code}`));
-      }
-    });
-
-    proc.on('error', (err) => {
-      clearTimeout(timeoutId);
-      reject(err);
-    });
-  });
+  } catch (error) {
+    return NextResponse.json(
+      { status: 'error', error: String(error) },
+      { status: 500 }
+    );
+  }
 }

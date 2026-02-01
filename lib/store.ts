@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import type {
   Project,
   Node,
@@ -16,8 +17,8 @@ import type {
   NodeStatus,
   SessionStatus,
   AgentTemplate,
-  PrimitiveAgentTemplate,
   ComposedAgentTemplate,
+  ExecutionBackend,
 } from './types';
 
 // ========== STATE INTERFACE ==========
@@ -70,11 +71,23 @@ interface OrchestraState {
   setDeliverableStatus: (sessionId: string, deliverableId: string, status: 'pending' | 'produced') => void;
   setCheckResult: (sessionId: string, checkId: string, result: 'pending' | 'passed' | 'failed') => void;
   incrementRetryAttempt: (sessionId: string, checkId: string) => number;
+  setSessionAttachInfo: (
+    sessionId: string,
+    info: { backend: ExecutionBackend; attachCommand?: string; containerId?: string }
+  ) => void;
+  setSessionSandboxInfo: (
+    sessionId: string,
+    info: { worktreePath: string; branchName: string; prUrl?: string }
+  ) => void;
 
   // ========== NODE RUN ACTIONS ==========
   createNodeRun: (run: Omit<NodeRun, 'id'>) => string;
   updateNodeRun: (runId: string, updates: Partial<NodeRun>) => void;
   completeNodeRun: (runId: string, status: 'completed' | 'failed', output?: string, error?: string) => void;
+  appendNodeOutput: (projectId: string, nodeId: string, chunk: string) => void;
+
+  // Track active node runs for live output streaming
+  activeNodeRuns: Record<string, string>; // nodeId -> runId
 
   // ========== UI ACTIONS ==========
   selectProject: (id: string | null) => void;
@@ -134,7 +147,8 @@ const defaultAgentLibrary: Record<string, AgentTemplate> = {
 };
 
 export const useOrchestraStore = create<OrchestraState>()(
-  immer((set) => ({
+  persist(
+    immer((set) => ({
     // Initial State
     projects: {},
     sessions: {},
@@ -145,6 +159,7 @@ export const useOrchestraStore = create<OrchestraState>()(
     agentHubMinimized: false,
     terminalModalOpen: false,
     terminalSessionId: null,
+    activeNodeRuns: {},
 
     // ========== PROJECT ACTIONS ==========
 
@@ -512,6 +527,28 @@ export const useOrchestraStore = create<OrchestraState>()(
       return newCount;
     },
 
+    setSessionAttachInfo: (sessionId, info) => {
+      set((state) => {
+        if (state.sessions[sessionId]) {
+          state.sessions[sessionId].backend = info.backend;
+          if (info.attachCommand) {
+            state.sessions[sessionId].attachCommand = info.attachCommand;
+          }
+          if (info.containerId) {
+            state.sessions[sessionId].containerId = info.containerId;
+          }
+        }
+      });
+    },
+
+    setSessionSandboxInfo: (sessionId, info) => {
+      set((state) => {
+        if (state.sessions[sessionId]) {
+          state.sessions[sessionId].sandboxInfo = info;
+        }
+      });
+    },
+
     // ========== NODE RUN ACTIONS ==========
 
     createNodeRun: (run) => {
@@ -521,6 +558,8 @@ export const useOrchestraStore = create<OrchestraState>()(
           ...run,
           id,
         };
+        // Track active run for live output streaming
+        state.activeNodeRuns[run.nodeId] = id;
       });
       return id;
     },
@@ -544,7 +583,22 @@ export const useOrchestraStore = create<OrchestraState>()(
           if (error !== undefined) {
             state.nodeRuns[runId].error = error;
           }
+          // Clear from active runs when completed
+          const nodeId = state.nodeRuns[runId].nodeId;
+          if (state.activeNodeRuns[nodeId] === runId) {
+            delete state.activeNodeRuns[nodeId];
+          }
         }
+      });
+    },
+
+    appendNodeOutput: (projectId, nodeId, chunk) => {
+      set((state) => {
+        const runId = state.activeNodeRuns[nodeId];
+        if (!runId || !state.nodeRuns[runId]) return;
+
+        const currentOutput = state.nodeRuns[runId].output || '';
+        state.nodeRuns[runId].output = currentOutput + chunk;
       });
     },
 
@@ -676,7 +730,33 @@ export const useOrchestraStore = create<OrchestraState>()(
         }
       });
     },
-  }))
+  })),
+    {
+      name: 'orchestra-storage',
+      storage: createJSONStorage(() => localStorage),
+      // Only persist essential data, not runtime state
+      partialize: (state) => ({
+        projects: state.projects,
+        agentLibrary: state.agentLibrary,
+        selectedProjectId: state.selectedProjectId,
+        agentHubMinimized: state.agentHubMinimized,
+      }),
+      // Merge persisted state with defaults on hydration
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<OrchestraState>;
+        return {
+          ...currentState,
+          projects: persisted.projects ?? currentState.projects,
+          agentLibrary: {
+            ...defaultAgentLibrary,
+            ...(persisted.agentLibrary ?? {}),
+          },
+          selectedProjectId: persisted.selectedProjectId ?? null,
+          agentHubMinimized: persisted.agentHubMinimized ?? false,
+        };
+      },
+    }
+  )
 );
 
 // ========== SELECTORS ==========

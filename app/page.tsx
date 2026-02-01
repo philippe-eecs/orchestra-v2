@@ -1,12 +1,40 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Header from '@/components/header';
 import Sidebar from '@/components/sidebar';
 import WorkflowCanvas from '@/components/workflow-canvas';
 import NodePanel from '@/components/node-panel';
 import AgentHub from '@/components/agent-hub';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { useOrchestraStore } from '@/lib/store';
+import type { Layout } from 'react-resizable-panels';
+import { usePanelRef } from 'react-resizable-panels';
+
+const WORKFLOW_PANELS_LAYOUT_KEY = 'orchestra.workflowPanelsLayout';
+const DEFAULT_WORKFLOW_PANELS_LAYOUT: Layout = { canvas: 70, inspector: 30 };
+
+function getStoredWorkflowPanelsLayout(): Layout | null {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const raw = window.localStorage.getItem(WORKFLOW_PANELS_LAYOUT_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const canvas = (parsed as { canvas?: unknown }).canvas;
+    const inspector = (parsed as { inspector?: unknown }).inspector;
+    if (typeof canvas !== 'number' || typeof inspector !== 'number') return null;
+
+    if (canvas <= 0 || inspector <= 0) return null;
+
+    return { canvas, inspector };
+  } catch {
+    return null;
+  }
+}
 
 function initializeDemoData() {
   const store = useOrchestraStore.getState();
@@ -825,6 +853,8 @@ The dashboard should be fully functional in demo mode without real API keys.`,
 
 export default function Home() {
   const initialized = useRef(false);
+  const canvasPanelRef = usePanelRef();
+  const [inspectorFullscreen, setInspectorFullscreen] = useState(false);
 
   useEffect(() => {
     if (!initialized.current) {
@@ -832,6 +862,39 @@ export default function Home() {
       initializeDemoData();
     }
   }, []);
+
+  const defaultWorkflowPanelsLayout = useMemo(
+    () => getStoredWorkflowPanelsLayout() ?? DEFAULT_WORKFLOW_PANELS_LAYOUT,
+    []
+  );
+
+  const handleWorkflowLayoutChanged = useCallback((layout: Layout) => {
+    const canvasCollapsed = canvasPanelRef.current?.isCollapsed() ?? false;
+    setInspectorFullscreen(canvasCollapsed);
+
+    // Avoid persisting transient fullscreen state (canvas collapsed to 0).
+    if (canvasCollapsed) return;
+
+    try {
+      window.localStorage.setItem(WORKFLOW_PANELS_LAYOUT_KEY, JSON.stringify(layout));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [canvasPanelRef]);
+
+  const toggleInspectorFullscreen = useCallback(() => {
+    const canvasPanel = canvasPanelRef.current;
+    if (!canvasPanel) return;
+
+    if (canvasPanel.isCollapsed()) {
+      canvasPanel.expand();
+      setInspectorFullscreen(false);
+      return;
+    }
+
+    canvasPanel.collapse();
+    setInspectorFullscreen(true);
+  }, [canvasPanelRef]);
 
   return (
     <div className="h-screen flex flex-col bg-background">
@@ -842,8 +905,38 @@ export default function Home() {
 
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 flex overflow-hidden">
-            <WorkflowCanvas />
-            <NodePanel />
+            <ResizablePanelGroup
+              orientation="horizontal"
+              defaultLayout={defaultWorkflowPanelsLayout}
+              onLayoutChanged={handleWorkflowLayoutChanged}
+              className="flex-1 min-h-0"
+            >
+              <ResizablePanel
+                id="canvas"
+                panelRef={canvasPanelRef}
+                collapsible
+                collapsedSize={0}
+                minSize={240}
+                className="min-w-0"
+              >
+                <WorkflowCanvas />
+              </ResizablePanel>
+
+              <ResizableHandle withHandle />
+
+              <ResizablePanel
+                id="inspector"
+                defaultSize={420}
+                minSize={320}
+                maxSize={900}
+                className="min-w-0"
+              >
+                <NodePanel
+                  fullscreen={inspectorFullscreen}
+                  onToggleFullscreen={toggleInspectorFullscreen}
+                />
+              </ResizablePanel>
+            </ResizablePanelGroup>
           </div>
 
           <AgentHub />

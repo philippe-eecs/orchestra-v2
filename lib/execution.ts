@@ -7,9 +7,29 @@ import type {
   CompiledContext,
   AgentConfig,
   ComposedAgentTemplate,
+  ExecutionConfig,
 } from './types';
 import { useOrchestraStore } from './store';
-import { executeAgent } from './api';
+import { executeAgent, isInteractiveBackend } from './api';
+
+/**
+ * Resolve the execution config for a node, considering project defaults.
+ * This is a client-safe version that doesn't import server-only modules.
+ */
+function resolveExecutionConfig(node: Node, project: Project): ExecutionConfig {
+  // Node-level config takes precedence over project default
+  if (node.executionConfig) {
+    return node.executionConfig;
+  }
+
+  // Fall back to project default
+  if (project.defaultExecutionConfig) {
+    return project.defaultExecutionConfig;
+  }
+
+  // Default to local execution
+  return { backend: 'local' };
+}
 
 // ========== EXECUTION CONSTANTS ==========
 
@@ -144,6 +164,61 @@ export function buildFullPrompt(
   }
 
   return parts.join('\n\n---\n\n');
+}
+
+/**
+ * Build a preview of the compiled prompt for display in the UI.
+ * This is a client-safe version that doesn't execute anything.
+ *
+ * @param node - The node to build the preview for
+ * @param project - The project containing the node
+ * @param nodeOutputs - Optional map of node outputs from parent nodes
+ * @returns Object with base prompt and compiled prompt
+ */
+export function buildPromptPreview(
+  node: Node,
+  project: Project,
+  nodeOutputs: Record<string, string> = {}
+): { base: string; compiled: string; sections: PromptPreviewSections } {
+  // Compile context refs into actual context
+  const compiledContext = compileContext(node, project, nodeOutputs);
+
+  // Build the full compiled prompt
+  const compiled = buildFullPrompt(node, compiledContext);
+
+  // Build sections breakdown for UI display
+  const sections: PromptPreviewSections = {
+    context: null,
+    prompt: node.prompt,
+    deliverables: null,
+  };
+
+  // Context section
+  const contextInstruction = buildContextInstruction(compiledContext);
+  if (contextInstruction) {
+    sections.context = contextInstruction;
+  }
+
+  // Deliverables section
+  const deliverableInstruction = buildDeliverablesInstruction(node.deliverables);
+  if (deliverableInstruction) {
+    sections.deliverables = deliverableInstruction;
+  }
+
+  return {
+    base: node.prompt,
+    compiled,
+    sections,
+  };
+}
+
+/**
+ * Sections of the compiled prompt for UI display
+ */
+export interface PromptPreviewSections {
+  context: string | null;
+  prompt: string;
+  deliverables: string | null;
 }
 
 // ========== CLI COMMAND BUILDING ==========
@@ -489,13 +564,7 @@ export async function executeComposedAgent(
   const completedNodes = new Set<string>();
   const failedNodes = new Set<string>();
 
-  // Map parent context to sub-DAG inputs
-  for (const input of template.inputs) {
-    for (const mapping of input.mappedTo) {
-      // For now, we inject the entire parent context into mapped nodes
-      // In a full implementation, we'd be more selective based on contextType
-    }
-  }
+  // TODO: Map parent context to sub-DAG inputs (template.inputs). Currently all nodes receive parentContext.
 
   // Execute sub-DAG using topological order
   const topoOrder = topologicalSortSubDAG(template.nodes, template.edges);
@@ -685,6 +754,9 @@ export async function executeNodeNew(
     store.setCheckResult(sessionId, c.id, 'pending');
   }
 
+  // Resolve execution config (node-level or project default)
+  const executionConfig = resolveExecutionConfig(node, project);
+
   try {
     // Get parent outputs
     const parentOutputs = getParentOutputs(node, project, store.nodeRuns);
@@ -716,8 +788,20 @@ export async function executeNodeNew(
     // Update session to running
     store.setSessionStatus(sessionId, 'running');
 
+    // Store execution backend info
+    store.setSessionAttachInfo(sessionId, {
+      backend: executionConfig.backend,
+    });
+
     // Execute based on agent type
-    let result: { status: string; output?: string; error?: string };
+    let result: {
+      status: string;
+      output?: string;
+      error?: string;
+      sessionId?: string;
+      attachCommand?: string;
+      sandboxInfo?: { worktreePath: string; branchName: string; prUrl?: string };
+    };
 
     if (node.agent.type === 'composed') {
       // Execute composed agent (sub-DAG)
@@ -758,7 +842,25 @@ export async function executeNodeNew(
         executor: node.agent.type,
         prompt: fullPrompt,
         options,
+        executionConfig,
+        projectPath: project.location,
+        projectId: project.id,
+        nodeId: node.id,
       });
+
+      // Store attach info if interactive backend
+      if (isInteractiveBackend(executionConfig.backend) && result.sessionId) {
+        store.setSessionAttachInfo(sessionId, {
+          backend: executionConfig.backend,
+          attachCommand: result.attachCommand,
+          containerId: result.sessionId,
+        });
+      }
+
+      // Store sandbox info if returned from API
+      if (result.sandboxInfo) {
+        store.setSessionSandboxInfo(sessionId, result.sandboxInfo);
+      }
     }
 
     if (result.status === 'error') {

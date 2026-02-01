@@ -11,6 +11,7 @@ import {
   XCircle,
   Clock,
   CheckSquare,
+  Terminal,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -21,6 +22,7 @@ import {
   selectCurrentProject,
 } from '@/lib/store';
 import { approveHumanCheck } from '@/lib/execution';
+import { isInteractiveBackend } from '@/lib/api';
 import TerminalModal from './terminal-modal';
 
 function formatDuration(ms: number): string {
@@ -100,6 +102,49 @@ export default function AgentHub() {
 
   const handleApprove = (sessionId: string, checkId: string) => {
     approveHumanCheck(sessionId, checkId);
+  };
+
+  const handleStop = async (sessionId: string) => {
+    const session = sessionsMap[sessionId];
+    if (!session) return;
+
+    try {
+      // Call the stop API
+      const response = await fetch('/api/execute/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: session.containerId || sessionId,
+          backend: session.backend,
+        }),
+      });
+
+      if (response.ok) {
+        // Update session status in store
+        useOrchestraStore.getState().setSessionStatus(sessionId, 'failed');
+        // Update node status
+        if (project) {
+          useOrchestraStore.getState().setNodeStatus(project.id, session.nodeId, 'failed');
+        }
+      }
+    } catch (error) {
+      console.error('Failed to stop session:', error);
+    }
+  };
+
+  const handleOpenTerminal = async (sessionId: string) => {
+    const session = sessionsMap[sessionId];
+    if (!session?.attachCommand) return;
+
+    try {
+      await fetch('/api/terminal/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: session.attachCommand }),
+      });
+    } catch (error) {
+      console.error('Failed to open terminal:', error);
+    }
   };
 
   return (
@@ -223,10 +268,24 @@ export default function AgentHub() {
                             <Eye className="w-3 h-3 mr-1" />
                             View
                           </Button>
+                          {/* Terminal button for interactive backends */}
+                          {session.backend && isInteractiveBackend(session.backend) && session.attachCommand && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs"
+                              onClick={() => handleOpenTerminal(session.id)}
+                              title="Open in external terminal"
+                            >
+                              <Terminal className="w-3 h-3 mr-1" />
+                              Terminal
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"
                             className="h-7 text-xs text-destructive"
+                            onClick={() => handleStop(session.id)}
                           >
                             <Square className="w-3 h-3 mr-1" />
                             Stop

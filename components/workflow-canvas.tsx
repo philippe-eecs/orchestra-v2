@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ReactFlow,
+  type ReactFlowInstance,
   Background,
   Controls,
   MiniMap,
@@ -99,6 +100,7 @@ export default function ProjectCanvas() {
   const selectNode = useOrchestraStore((state) => state.selectNode);
 
   const [createAgentDialogOpen, setCreateAgentDialogOpen] = useState(false);
+  const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
 
   // Convert project nodes to React Flow format
   const rfNodes: Node[] = useMemo(() => {
@@ -247,14 +249,25 @@ export default function ProjectCanvas() {
     (event: React.MouseEvent) => {
       if (!project) return;
 
-      const bounds = (event.target as HTMLElement)
-        .closest('.react-flow')
-        ?.getBoundingClientRect();
-
-      if (!bounds) return;
-
-      const x = event.clientX - bounds.left;
-      const y = event.clientY - bounds.top;
+      // Convert screen coords to flow coords (accounts for zoom/pan)
+      let x = 0;
+      let y = 0;
+      if (reactFlowInstance?.screenToFlowPosition) {
+        const pos = reactFlowInstance.screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY,
+        });
+        x = pos.x;
+        y = pos.y;
+      } else {
+        // Fallback: approximate based on container bounds
+        const bounds = (event.target as HTMLElement)
+          .closest('.react-flow')
+          ?.getBoundingClientRect();
+        if (!bounds) return;
+        x = event.clientX - bounds.left;
+        y = event.clientY - bounds.top;
+      }
 
       const nodeId = addNode(project.id, {
         title: `Node ${project.nodes.length + 1}`,
@@ -269,7 +282,7 @@ export default function ProjectCanvas() {
 
       selectNode(nodeId);
     },
-    [project, addNode, selectNode]
+    [project, addNode, selectNode, reactFlowInstance]
   );
 
   const handleAutoLayout = useCallback(() => {
@@ -303,6 +316,7 @@ export default function ProjectCanvas() {
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        onInit={setReactFlowInstance}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

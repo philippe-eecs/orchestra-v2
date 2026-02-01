@@ -6,7 +6,6 @@ interface LLMCriticRequest {
   criticAgent: AgentType;
   criteria: string;
   threshold?: number;
-  projectLocation?: string;
 }
 
 interface CriticResponse {
@@ -22,7 +21,6 @@ export async function POST(request: Request) {
       criticAgent,
       criteria,
       threshold = 70,
-      projectLocation,
     }: LLMCriticRequest = await request.json();
 
     if (!nodeOutput || !criteria) {
@@ -84,7 +82,7 @@ Be strict but fair. Score based on how well the output meets the specified crite
         throw new Error('No JSON found in critic response');
       }
       criticResponse = JSON.parse(jsonMatch[0]);
-    } catch (parseError) {
+    } catch {
       // If parsing fails, create a default response
       criticResponse = {
         score: 50,

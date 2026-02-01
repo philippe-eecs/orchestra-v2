@@ -150,6 +150,9 @@ export interface Node {
 
   // Reference to the running/completed session
   sessionId: string | null;
+
+  // Execution backend configuration (overrides project default)
+  executionConfig?: ExecutionConfig;
 }
 
 // ========== EDGE ==========
@@ -196,6 +199,18 @@ export interface Session {
   // Timing
   startedAt: number;
   completedAt: number | null;
+
+  // Execution backend info (for attach/monitoring)
+  backend?: ExecutionBackend;
+  attachCommand?: string;
+  containerId?: string;
+
+  // Sandbox info
+  sandboxInfo?: {
+    worktreePath: string;
+    branchName: string;
+    prUrl?: string;
+  };
 }
 
 // ========== PROJECT CONTEXT ==========
@@ -226,6 +241,9 @@ export interface Project {
   // The DAG
   nodes: Node[];
   edges: Edge[];
+
+  // Default execution backend for all nodes (can be overridden per-node)
+  defaultExecutionConfig?: ExecutionConfig;
 }
 
 // ========== NODE RUN (Execution Record) ==========
@@ -320,3 +338,168 @@ export interface ComposedAgentTemplate extends BaseAgentTemplate {
 }
 
 export type AgentTemplate = PrimitiveAgentTemplate | ComposedAgentTemplate;
+
+// ========== AGENT PRESETS ==========
+
+export interface AgentPreset {
+  id: string;
+  label: string;
+  description: string;
+  group: 'Claude' | 'Codex' | 'Gemini' | 'Composed';
+  config: AgentConfig;
+}
+
+export const AGENT_PRESETS: AgentPreset[] = [
+  // Claude presets
+  {
+    id: 'claude-sonnet',
+    label: 'Claude Sonnet',
+    description: 'Balanced performance and speed',
+    group: 'Claude',
+    config: { type: 'claude', model: 'sonnet' },
+  },
+  {
+    id: 'claude-opus',
+    label: 'Claude Opus',
+    description: 'Highest capability, complex reasoning',
+    group: 'Claude',
+    config: { type: 'claude', model: 'opus' },
+  },
+  {
+    id: 'claude-haiku',
+    label: 'Claude Haiku',
+    description: 'Fast and lightweight',
+    group: 'Claude',
+    config: { type: 'claude', model: 'haiku' },
+  },
+  // Codex presets
+  {
+    id: 'codex-default',
+    label: 'Codex',
+    description: 'Code generation, default settings',
+    group: 'Codex',
+    config: { type: 'codex' },
+  },
+  {
+    id: 'codex-high',
+    label: 'Codex (High Reasoning)',
+    description: 'More deliberate, better for complex code',
+    group: 'Codex',
+    config: { type: 'codex', reasoningEffort: 'high' },
+  },
+  {
+    id: 'codex-xhigh',
+    label: 'Codex (Max Reasoning)',
+    description: 'Maximum reasoning effort',
+    group: 'Codex',
+    config: { type: 'codex', reasoningEffort: 'xhigh' },
+  },
+  // Gemini presets
+  {
+    id: 'gemini-pro',
+    label: 'Gemini Pro',
+    description: 'Multimodal, web search capable',
+    group: 'Gemini',
+    config: { type: 'gemini', model: 'gemini-3-pro-preview' },
+  },
+  {
+    id: 'gemini-flash',
+    label: 'Gemini Flash',
+    description: 'Fast multimodal processing',
+    group: 'Gemini',
+    config: { type: 'gemini', model: 'gemini-3-flash' },
+  },
+];
+
+// ========== EXECUTION BACKENDS ==========
+
+export type ExecutionBackend =
+  | 'local'              // spawn() directly - fastest, no isolation
+  | 'docker'             // docker run, wait for completion - isolated
+  | 'docker-interactive' // docker run + tmux - can attach/detach
+  | 'remote'             // SSH to VM + docker - always-on, mobile access
+  | 'modal';             // Modal serverless - GPU, auto-scaling
+
+export interface DockerMount {
+  hostPath: string;
+  containerPath: string;
+  readonly?: boolean;
+}
+
+export interface DockerConfig {
+  image?: string;  // Default: 'orchestra-agent:full'
+  mounts?: DockerMount[];
+  env?: Record<string, string>;
+  resources?: {
+    memory?: string;  // e.g., '4g'
+    cpus?: string;    // e.g., '2'
+  };
+  network?: string;
+}
+
+export interface RemoteConfig {
+  host: string;
+  user?: string;       // Default: 'root'
+  keyPath?: string;    // SSH key path
+  port?: number;       // Default: 22
+}
+
+export interface ModalConfig {
+  functionName?: string;  // Default: 'run_agent'
+  gpu?: 'T4' | 'A10G' | 'A100' | 'H100';
+  timeout?: number;       // Max runtime in seconds
+  memory?: number;        // Memory in MB
+}
+
+export interface InteractiveConfig {
+  sessionName?: string;   // tmux session name - auto-generated if not provided
+  timeout?: number;       // Max runtime before auto-kill (ms)
+}
+
+export interface SandboxConfig {
+  enabled: boolean;              // default: true
+  type: 'git-worktree';          // future: 'docker-volume', 'copy'
+  branchPrefix?: string;         // default: 'agent/'
+  createPR?: boolean;            // default: true
+  prBaseBranch?: string;         // default: 'main'
+  cleanupOnSuccess?: boolean;    // default: true
+  keepOnFailure?: boolean;       // default: true (for debugging)
+}
+
+export interface ExecutionConfig {
+  backend: ExecutionBackend;
+  docker?: DockerConfig;
+  remote?: RemoteConfig;
+  modal?: ModalConfig;
+  interactive?: InteractiveConfig;
+  sandbox?: SandboxConfig;
+}
+
+export interface ExecutionResult {
+  status: 'done' | 'running' | 'error';
+  output?: string;
+  error?: string;
+
+  // For interactive backends
+  sessionId?: string;
+  attachCommand?: string;  // e.g., "docker exec -it abc123 tmux attach"
+
+  // Metadata
+  backend?: ExecutionBackend;
+  duration?: number;  // Execution time in ms
+}
+
+export interface ExecuteRequest {
+  // What to execute
+  executor: 'claude' | 'codex' | 'gemini';
+  prompt: string;
+  options?: Record<string, unknown>;
+
+  // Where to execute
+  executionConfig?: ExecutionConfig;
+
+  // Context
+  projectPath?: string;
+  projectId?: string;
+  nodeId?: string;
+}
