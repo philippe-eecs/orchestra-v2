@@ -1,232 +1,173 @@
-/**
- * API utilities for Orchestra
- *
- * This file provides utility functions for execution backends.
- * The actual API calls are made via tauri-api.ts using Tauri IPC.
- */
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { AgentType, Project } from './types';
 
-import type { ExecutionConfig, ExecutionBackend } from './types';
-import * as tauriApi from './tauri-api';
-
-export interface ExecuteRequest {
-  executor: 'claude' | 'codex' | 'gemini';
-  prompt: string;
-  options?: Record<string, unknown>;
-  executionConfig?: ExecutionConfig;
-  projectPath?: string;
-  projectId?: string;
-  nodeId?: string;
-}
-
-export interface ExecuteResponse {
-  status: 'done' | 'running' | 'error';
-  output?: string;
-  error?: string;
-  sessionId?: string;
-  attachCommand?: string;
-  backend?: ExecutionBackend;
-  duration?: number;
-  sandboxInfo?: {
-    worktreePath: string;
-    branchName: string;
-    prUrl?: string;
-  };
-}
-
-export interface SessionStatusResponse {
-  status: 'running' | 'stopped' | 'unknown' | 'error';
-  output?: string;
-  error?: string;
+export type ExecutionChunkEvent = {
   sessionId: string;
-}
+  stream: 'stdout' | 'stderr';
+  chunk: string;
+};
 
-/**
- * Execute an agent command via Tauri IPC
- */
-export async function executeAgent(request: ExecuteRequest): Promise<ExecuteResponse> {
-  if (!request.projectId || !request.nodeId) {
-    return {
-      status: 'error',
-      error: 'projectId and nodeId are required',
-    };
-  }
+export type ExecutionDoneEvent = {
+  sessionId: string;
+  success: boolean;
+  exitCode: number | null;
+};
 
+export type ExecutionErrorEvent = {
+  sessionId: string;
+  message: string;
+};
+
+const LS_KEY = 'orchestra.projects.v1';
+
+function readLocalProjects(): Record<string, Project> {
   try {
-    const response = await tauriApi.executeNode({
-      projectId: request.projectId,
-      nodeId: request.nodeId,
-      executor: request.executor,
-      prompt: request.prompt,
-      options: request.options,
-      projectPath: request.projectPath,
-      executionConfig: request.executionConfig,
-    });
-
-    return {
-      status: 'running',
-      sessionId: response.sessionId,
-    };
-  } catch (error) {
-    return {
-      status: 'error',
-      error: error instanceof Error ? error.message : String(error),
-    };
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<string, Project>;
+  } catch {
+    return {};
   }
 }
 
-/**
- * Check the status of an interactive session
- */
-export async function getSessionStatus(
-  sessionId: string,
-  _backend: ExecutionBackend
-): Promise<SessionStatusResponse> {
-  try {
-    const session = await tauriApi.getSession(sessionId);
-
-    if (!session) {
-      return {
-        status: 'unknown',
-        sessionId,
-      };
-    }
-
-    const output = await tauriApi.getSessionOutput(sessionId);
-
-    return {
-      status: session.status === 'running' ? 'running' :
-             session.status === 'completed' || session.status === 'failed' ? 'stopped' :
-             'unknown',
-      output: output || undefined,
-      sessionId,
-    };
-  } catch (error) {
-    return {
-      status: 'error',
-      error: error instanceof Error ? error.message : String(error),
-      sessionId,
-    };
-  }
+function writeLocalProjects(projects: Record<string, Project>) {
+  localStorage.setItem(LS_KEY, JSON.stringify(projects));
 }
 
-/**
- * Poll for session completion
- */
-export async function waitForSession(
-  sessionId: string,
-  backend: ExecutionBackend,
-  options?: {
-    pollIntervalMs?: number;
-    maxWaitMs?: number;
-    onProgress?: (output: string) => void;
-  }
-): Promise<ExecuteResponse> {
-  const pollInterval = options?.pollIntervalMs || 2000;
-  const maxWait = options?.maxWaitMs || 30 * 60 * 1000;
-  const startTime = Date.now();
+function now() {
+  return Date.now();
+}
 
-  while (Date.now() - startTime < maxWait) {
-    const status = await getSessionStatus(sessionId, backend);
+function randomId() {
+  return crypto.randomUUID();
+}
 
-    if (status.status === 'stopped' || status.status === 'error') {
-      return {
-        status: status.status === 'stopped' ? 'done' : 'error',
-        output: status.output,
-        error: status.error,
-        sessionId,
-        backend,
-      };
-    }
+export async function listProjects(): Promise<Project[]> {
+  if (isTauri()) return invoke<Project[]>('list_projects');
+  return Object.values(readLocalProjects()).sort((a, b) => b.updatedAt - a.updatedAt);
+}
 
-    if (options?.onProgress && status.output) {
-      options.onProgress(status.output);
-    }
+export async function getProject(id: string): Promise<Project | null> {
+  if (isTauri()) return invoke<Project | null>('get_project', { id });
+  return readLocalProjects()[id] ?? null;
+}
 
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
-  }
-
-  return {
-    status: 'error',
-    error: `Session timed out after ${maxWait / 1000} seconds`,
-    sessionId,
-    backend,
+export async function createProject(input: { name: string; description?: string }): Promise<Project> {
+  if (isTauri()) return invoke<Project>('create_project', { name: input.name, description: input.description ?? '' });
+  const projects = readLocalProjects();
+  const id = randomId();
+  const project: Project = {
+    id,
+    name: input.name,
+    description: input.description ?? '',
+    nodes: [],
+    edges: [],
+    createdAt: now(),
+    updatedAt: now(),
   };
+  projects[id] = project;
+  writeLocalProjects(projects);
+  return project;
 }
 
-/**
- * Stop an execution
- */
+export async function saveProject(project: Project): Promise<Project> {
+  if (isTauri()) return invoke<Project>('save_project', { project });
+  const projects = readLocalProjects();
+  projects[project.id] = { ...project, updatedAt: now() };
+  writeLocalProjects(projects);
+  return projects[project.id]!;
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  if (isTauri()) return invoke<void>('delete_project', { id });
+  const projects = readLocalProjects();
+  delete projects[id];
+  writeLocalProjects(projects);
+}
+
+const BROWSER_BUS = new EventTarget();
+
+export async function executeNode(input: {
+  sessionId?: string;
+  nodeId: string;
+  agent: AgentType;
+  prompt: string;
+  cwd?: string;
+}): Promise<{ sessionId: string }> {
+  if (isTauri()) return invoke<{ sessionId: string }>('execute_node', input);
+
+  const sessionId = input.sessionId ?? randomId();
+  const header = `> (${input.agent}) executing node ${input.nodeId}\n\n`;
+  BROWSER_BUS.dispatchEvent(
+    new CustomEvent<ExecutionChunkEvent>('execution://chunk', {
+      detail: { sessionId, stream: 'stdout', chunk: header },
+    }),
+  );
+
+  const lines = [
+    `This is a browser fallback executor.\n`,
+    `Prompt:\n${input.prompt}\n\n`,
+    `Tip: run via Tauri to execute real CLIs.\n`,
+  ];
+
+  let idx = 0;
+  const timer = setInterval(() => {
+    if (idx >= lines.length) {
+      clearInterval(timer);
+      BROWSER_BUS.dispatchEvent(
+        new CustomEvent<ExecutionDoneEvent>('execution://done', {
+          detail: { sessionId, success: true, exitCode: 0 },
+        }),
+      );
+      return;
+    }
+    BROWSER_BUS.dispatchEvent(
+      new CustomEvent<ExecutionChunkEvent>('execution://chunk', {
+        detail: { sessionId, stream: 'stdout', chunk: lines[idx++]! },
+      }),
+    );
+  }, 250);
+
+  return { sessionId };
+}
+
 export async function stopExecution(sessionId: string): Promise<void> {
-  await tauriApi.stopExecution(sessionId);
+  if (isTauri()) return invoke<void>('stop_execution', { sessionId });
+  BROWSER_BUS.dispatchEvent(
+    new CustomEvent<ExecutionErrorEvent>('execution://error', {
+      detail: { sessionId, message: 'stopExecution not supported in browser fallback.' },
+    }),
+  );
 }
 
-/**
- * Helper to determine if a backend supports interactive features
- */
-export function isInteractiveBackend(backend: ExecutionBackend): boolean {
-  return ['docker-interactive', 'remote'].includes(backend);
-}
+export async function listenExecutionEvents(handlers: {
+  onChunk: (e: ExecutionChunkEvent) => void;
+  onDone: (e: ExecutionDoneEvent) => void;
+  onError: (e: ExecutionErrorEvent) => void;
+}): Promise<UnlistenFn> {
+  if (isTauri()) {
+    const unChunk = await listen<ExecutionChunkEvent>('execution://chunk', (event) => handlers.onChunk(event.payload));
+    const unDone = await listen<ExecutionDoneEvent>('execution://done', (event) => handlers.onDone(event.payload));
+    const unErr = await listen<ExecutionErrorEvent>('execution://error', (event) => handlers.onError(event.payload));
+    return () => {
+      unChunk();
+      unDone();
+      unErr();
+    };
+  }
 
-/**
- * Get a human-readable description of execution backend
- */
-export function getBackendLabel(backend: ExecutionBackend): string {
-  const labels: Record<ExecutionBackend, string> = {
-    local: 'Local',
-    docker: 'Docker',
-    'docker-interactive': 'Docker (Interactive)',
-    remote: 'Remote VM',
-    modal: 'Modal (Serverless)',
+  const chunkListener = (event: Event) => handlers.onChunk((event as CustomEvent<ExecutionChunkEvent>).detail);
+  const doneListener = (event: Event) => handlers.onDone((event as CustomEvent<ExecutionDoneEvent>).detail);
+  const errListener = (event: Event) => handlers.onError((event as CustomEvent<ExecutionErrorEvent>).detail);
+
+  BROWSER_BUS.addEventListener('execution://chunk', chunkListener);
+  BROWSER_BUS.addEventListener('execution://done', doneListener);
+  BROWSER_BUS.addEventListener('execution://error', errListener);
+
+  return () => {
+    BROWSER_BUS.removeEventListener('execution://chunk', chunkListener);
+    BROWSER_BUS.removeEventListener('execution://done', doneListener);
+    BROWSER_BUS.removeEventListener('execution://error', errListener);
   };
-  return labels[backend] || backend;
-}
-
-/**
- * Get backend-specific features/capabilities
- */
-export function getBackendCapabilities(backend: ExecutionBackend): {
-  isolated: boolean;
-  interactive: boolean;
-  gpu: boolean;
-  autoscale: boolean;
-  surviveDisconnect: boolean;
-} {
-  const capabilities: Record<ExecutionBackend, ReturnType<typeof getBackendCapabilities>> = {
-    local: {
-      isolated: false,
-      interactive: false,
-      gpu: false,
-      autoscale: false,
-      surviveDisconnect: false,
-    },
-    docker: {
-      isolated: true,
-      interactive: false,
-      gpu: false,
-      autoscale: false,
-      surviveDisconnect: false,
-    },
-    'docker-interactive': {
-      isolated: true,
-      interactive: true,
-      gpu: false,
-      autoscale: false,
-      surviveDisconnect: true,
-    },
-    remote: {
-      isolated: true,
-      interactive: true,
-      gpu: true,
-      autoscale: false,
-      surviveDisconnect: true,
-    },
-    modal: {
-      isolated: true,
-      interactive: false,
-      gpu: true,
-      autoscale: true,
-      surviveDisconnect: true,
-    },
-  };
-  return capabilities[backend];
 }

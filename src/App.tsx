@@ -1,73 +1,35 @@
 import { useEffect } from 'react';
+import CanvasView from './views/CanvasView';
 import { useOrchestraStore } from '@/lib/store';
-import { TooltipProvider } from '@/components/ui/tooltip';
-import Titlebar from '@/components/titlebar';
-import TerminalModal from '@/components/terminal-modal';
-import DashboardView from '@/components/views/dashboard-view';
-import CanvasView from '@/components/views/canvas-view';
-import AgentsView from '@/components/views/agents-view';
-import RunsView from '@/components/views/runs-view';
-import SettingsView from '@/components/views/settings-view';
+import { Button } from '@/components/ui/button';
 
-function App() {
-  const currentView = useOrchestraStore((s) => s.currentView);
-  const terminalModalOpen = useOrchestraStore((s) => s.terminalModalOpen);
-  const terminalSessionId = useOrchestraStore((s) => s.terminalSessionId);
-  const closeTerminalModal = useOrchestraStore((s) => s.closeTerminalModal);
-  const checkSystemStatus = useOrchestraStore((s) => s.checkSystemStatus);
-  const initialize = useOrchestraStore((s) => s.initialize);
+export default function App() {
+  const view = useOrchestraStore((s) => s.view);
+  const setView = useOrchestraStore((s) => s.setView);
+  const loadProjects = useOrchestraStore((s) => s.loadProjects);
 
-  // Initialize Tauri-specific features
   useEffect(() => {
-    // Prevent default context menu in production
-    if (import.meta.env.PROD) {
-      document.addEventListener('contextmenu', (e) => e.preventDefault());
-    }
-
-    // Load persisted state from backend (Tauri only; no-ops in browser dev)
-    initialize();
-
-    // Check system status on startup
-    checkSystemStatus();
-  }, [checkSystemStatus, initialize]);
-
-  const renderView = () => {
-    switch (currentView) {
-      case 'dashboard':
-        return <DashboardView />;
-      case 'canvas':
-        return <CanvasView />;
-      case 'agents':
-        return <AgentsView />;
-      case 'runs':
-        return <RunsView />;
-      case 'settings':
-        return <SettingsView />;
-      default:
-        return <DashboardView />;
-    }
-  };
+    void loadProjects();
+  }, [loadProjects]);
 
   return (
-    <TooltipProvider>
-      <div className="h-screen flex flex-col bg-background text-foreground overflow-hidden">
-        {/* macOS-style Titlebar with navigation */}
-        <Titlebar />
-
-        {/* Main content area */}
-        <main className="flex-1 flex min-h-0">
-          {renderView()}
-        </main>
-
-        {/* Terminal Modal (global) */}
-        <TerminalModal
-          open={terminalModalOpen}
-          onOpenChange={(open) => !open && closeTerminalModal()}
-          sessionId={terminalSessionId}
-        />
+    <div className="h-full w-full">
+      <div className="flex h-12 items-center gap-2 border-b border-border bg-card px-3">
+        <div className="font-semibold">Orchestra</div>
+        <div className="ml-auto flex items-center gap-2">
+          <Button size="sm" variant={view === 'canvas' ? 'default' : 'secondary'} onClick={() => setView('canvas')}>
+            Canvas
+          </Button>
+          <Button size="sm" variant={view === 'runs' ? 'default' : 'secondary'} onClick={() => setView('runs')}>
+            Runs
+          </Button>
+        </div>
       </div>
-    </TooltipProvider>
+
+      <div className="h-[calc(100%-3rem)]">
+        {view === 'canvas' ? <CanvasView /> : <div className="p-4 text-muted-foreground">Runs view (Phase 3).</div>}
+      </div>
+    </div>
   );
 }
 
-export default App;

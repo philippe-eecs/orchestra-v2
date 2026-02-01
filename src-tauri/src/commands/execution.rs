@@ -1,165 +1,213 @@
-//! Execution commands for running agents
-
-use crate::db::Database;
-use crate::executors::{self, ExecuteRequest, ExecutionResult};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::Emitter;
+use tokio::io::AsyncWriteExt;
 
-/// Request to execute a node
+use crate::executors;
+use crate::state::{AppState, RunningProcess};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecuteNodeRequest {
-    pub project_id: String,
+pub struct ExecuteNodeInput {
+    pub session_id: Option<String>,
     pub node_id: String,
-    pub executor: String,
+    pub agent: String,
     pub prompt: String,
-    pub options: Option<serde_json::Value>,
-    pub project_path: Option<String>,
-    pub execution_config: Option<super::projects::ExecutionConfig>,
+    pub cwd: Option<String>,
 }
 
-/// Response from execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecuteNodeResponse {
+pub struct ExecuteNodeOutput {
     pub session_id: String,
-    pub status: String,
 }
 
-/// Output chunk event for streaming
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OutputChunkEvent {
+pub struct ExecutionChunkEvent {
     pub session_id: String,
-    pub node_id: String,
+    pub stream: String,
     pub chunk: String,
 }
 
-/// Execution complete event
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecutionCompleteEvent {
+pub struct ExecutionDoneEvent {
     pub session_id: String,
-    pub node_id: String,
-    pub status: String,
-    pub output: Option<String>,
-    pub error: Option<String>,
+    pub success: bool,
+    pub exit_code: Option<i32>,
 }
 
-/// Execute a node
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionErrorEvent {
+    pub session_id: String,
+    pub message: String,
+}
+
+async fn pump_output(
+    window: tauri::Window,
+    session_id: String,
+    stream: String,
+    mut reader: tokio::process::ChildStdout,
+) {
+    use tokio::io::AsyncReadExt;
+
+    let mut buf = [0u8; 4096];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                if let Err(e) = window.emit(
+                    "execution://chunk",
+                    ExecutionChunkEvent {
+                        session_id: session_id.clone(),
+                        stream: stream.clone(),
+                        chunk,
+                    },
+                ) {
+                    tracing::warn!("Failed to emit stdout chunk: {e}");
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+async fn pump_error(
+    window: tauri::Window,
+    session_id: String,
+    stream: String,
+    mut reader: tokio::process::ChildStderr,
+) {
+    use tokio::io::AsyncReadExt;
+
+    let mut buf = [0u8; 4096];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                if let Err(e) = window.emit(
+                    "execution://chunk",
+                    ExecutionChunkEvent {
+                        session_id: session_id.clone(),
+                        stream: stream.clone(),
+                        chunk,
+                    },
+                ) {
+                    tracing::warn!("Failed to emit stderr chunk: {e}");
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn execute_node(
-    app: AppHandle,
-    db: State<'_, Database>,
-    request: ExecuteNodeRequest,
-) -> Result<ExecuteNodeResponse, String> {
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let node_id = request.node_id.clone();
-    let project_id = request.project_id.clone();
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    input: ExecuteNodeInput,
+) -> Result<ExecuteNodeOutput, String> {
+    let session_id = input.session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    // Create session in database
-    db.create_session(&session_id, &node_id, &request.executor)
-        .map_err(|e| e.to_string())?;
+    let mut child = executors::local::spawn_agent(&input.agent, &input.cwd)?;
 
-    // Set node status to running
-    db.set_node_status(
-        &project_id,
-        &node_id,
-        &super::projects::NodeStatus::Running,
-    )
-    .map_err(|e| e.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input.prompt.as_bytes())
+            .await
+            .map_err(|e| format!("failed writing stdin: {e}"))?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|e| format!("failed closing stdin: {e}"))?;
+    }
 
-    // Build execution request
-    let exec_request = ExecuteRequest {
-        executor: request.executor.clone(),
-        prompt: request.prompt.clone(),
-        options: request.options.clone(),
-        project_path: request.project_path.clone(),
-        execution_config: request.execution_config.clone(),
-    };
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture stderr".to_string())?;
 
-    // Clones for the output callback
-    let session_id_for_output = session_id.clone();
-    let node_id_for_output = node_id.clone();
-    let app_for_output = app.clone();
+    let running = RunningProcess::new(child);
+    state
+        .processes
+        .lock()
+        .await
+        .insert(session_id.clone(), running.clone());
 
-    // Clones for the completion handler
-    let session_id_for_complete = session_id.clone();
-    let node_id_for_complete = node_id.clone();
-    let app_for_complete = app.clone();
+    let window_stdout = window.clone();
+    let window_stderr = window.clone();
+    let session_stdout = session_id.clone();
+    let session_stderr = session_id.clone();
+    tokio::spawn(async move { pump_output(window_stdout, session_stdout, "stdout".to_string(), stdout).await });
+    tokio::spawn(async move { pump_error(window_stderr, session_stderr, "stderr".to_string(), stderr).await });
 
+    let window_done = window.clone();
+    let state_processes = state.processes.clone();
+    let session_done = session_id.clone();
     tokio::spawn(async move {
-        let result = executors::execute(exec_request, move |chunk| {
-            // Emit output chunk event
-            let _ = app_for_output.emit(
-                "execution:output",
-                OutputChunkEvent {
-                    session_id: session_id_for_output.clone(),
-                    node_id: node_id_for_output.clone(),
-                    chunk,
-                },
-            );
-        })
-        .await;
-
-        // Update session and node status based on result
-        let (status, output, error) = match result {
-            Ok(ExecutionResult::Done { output }) => ("completed", Some(output), None),
-            Ok(ExecutionResult::Running { session_id: _, attach_command: _ }) => {
-                ("running", None, None)
+        let status = running.wait().await;
+        state_processes.lock().await.remove(&session_done);
+        match status {
+            Ok(status) => {
+                if let Err(e) = window_done.emit(
+                    "execution://done",
+                    ExecutionDoneEvent {
+                        session_id: session_done,
+                        success: status.success(),
+                        exit_code: status.code(),
+                    },
+                ) {
+                    tracing::warn!("Failed to emit execution done event: {e}");
+                }
             }
-            Ok(ExecutionResult::Error { message }) => ("failed", None, Some(message)),
-            Err(e) => ("failed", None, Some(e.to_string())),
-        };
-
-        // Emit completion event - frontend will update its state
-        let _ = app_for_complete.emit(
-            "execution:complete",
-            ExecutionCompleteEvent {
-                session_id: session_id_for_complete,
-                node_id: node_id_for_complete,
-                status: status.to_string(),
-                output,
-                error,
-            },
-        );
+            Err(e) => {
+                if let Err(emit_err) = window_done.emit(
+                    "execution://error",
+                    ExecutionErrorEvent {
+                        session_id: session_done,
+                        message: format!("wait error: {e}"),
+                    },
+                ) {
+                    tracing::warn!("Failed to emit execution error event: {emit_err}");
+                }
+            }
+        }
     });
 
-    Ok(ExecuteNodeResponse {
-        session_id,
-        status: "running".to_string(),
-    })
+    Ok(ExecuteNodeOutput { session_id })
 }
 
-/// Stop an execution
 #[tauri::command]
 pub async fn stop_execution(
-    db: State<'_, Database>,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
-    // Get session to find container/process info
-    let session = db
-        .get_session(&session_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Session not found".to_string())?;
+    let running = { state.processes.lock().await.get(&session_id).cloned() };
+    let Some(running) = running else {
+        return Ok(());
+    };
 
-    // Stop based on backend type
-    executors::stop_execution(&session)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Update session status
-    db.set_session_status(&session_id, "failed")
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-/// Get execution status
-#[tauri::command]
-pub async fn get_execution_status(
-    db: State<'_, Database>,
-    session_id: String,
-) -> Result<Option<crate::db::Session>, String> {
-    db.get_session(&session_id).map_err(|e| e.to_string())
+    match running.kill().await {
+        Ok(()) => {
+            if let Err(e) = window.emit(
+                "execution://error",
+                ExecutionErrorEvent {
+                    session_id,
+                    message: "Execution stopped".to_string(),
+                },
+            ) {
+                tracing::warn!("Failed to emit stop execution event: {e}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(format!("failed to kill process: {e}")),
+    }
 }

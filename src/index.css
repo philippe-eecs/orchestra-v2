@@ -2,156 +2,45 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 5.9% 10%;
-    --radius: 0.5rem;
-  }
+:root {
+  --background: 222 47% 11%;
+  --foreground: 210 40% 98%;
 
-  .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
-  }
+  --card: 222 47% 14%;
+  --card-foreground: 210 40% 98%;
+
+  --popover: 222 47% 14%;
+  --popover-foreground: 210 40% 98%;
+
+  --primary: 210 40% 98%;
+  --primary-foreground: 222 47% 11%;
+
+  --secondary: 217 33% 17%;
+  --secondary-foreground: 210 40% 98%;
+
+  --muted: 217 33% 17%;
+  --muted-foreground: 215 20% 65%;
+
+  --accent: 217 33% 17%;
+  --accent-foreground: 210 40% 98%;
+
+  --destructive: 0 62% 30%;
+  --destructive-foreground: 210 40% 98%;
+
+  --border: 217 33% 20%;
+  --input: 217 33% 20%;
+  --ring: 212 95% 68%;
+
+  --radius: 10px;
 }
 
-@layer base {
-  * {
-    @apply border-border;
-  }
-  body {
-    @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
-  }
+html,
+body,
+#root {
+  height: 100%;
 }
 
-/* Custom scrollbar for dark mode */
-.dark ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+body {
+  @apply bg-background text-foreground antialiased;
 }
 
-.dark ::-webkit-scrollbar-track {
-  background: hsl(240 3.7% 15.9%);
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background: hsl(240 3.7% 25%);
-  border-radius: 4px;
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: hsl(240 3.7% 35%);
-}
-
-/* React Flow customizations */
-.react-flow__node {
-  @apply !bg-transparent;
-}
-
-.react-flow__edge-path {
-  @apply stroke-muted-foreground/50;
-}
-
-.react-flow__edge.selected .react-flow__edge-path {
-  @apply stroke-primary;
-}
-
-/* Prevent text selection in UI elements */
-.no-select {
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-/* Tauri window drag region */
-[data-tauri-drag-region] {
-  -webkit-app-region: drag;
-}
-
-[data-tauri-drag-region] button,
-[data-tauri-drag-region] input,
-[data-tauri-drag-region] a,
-[data-tauri-drag-region] [role="button"],
-[data-tauri-drag-region] [role="combobox"],
-[data-tauri-drag-region] [role="menu"],
-[data-tauri-drag-region] [data-radix-popper-content-wrapper] {
-  -webkit-app-region: no-drag;
-}
-
-/* Titlebar styling */
-.titlebar {
-  -webkit-app-region: drag;
-}
-
-.titlebar-no-drag {
-  -webkit-app-region: no-drag;
-}
-
-/* Traffic light safe zone - 70px left padding for macOS window controls */
-.traffic-light-padding {
-  padding-left: 70px;
-}
-
-/* View transition animations */
-.view-enter {
-  opacity: 0;
-  transform: translateY(4px);
-}
-
-.view-enter-active {
-  opacity: 1;
-  transform: translateY(0);
-  transition: opacity 150ms ease-out, transform 150ms ease-out;
-}
-
-.view-exit {
-  opacity: 1;
-}
-
-.view-exit-active {
-  opacity: 0;
-  transition: opacity 100ms ease-in;
-}
-
-/* Ensure resizable panels respect container bounds */
-[data-panel-group] {
-  min-width: 0;
-}
-
-[data-panel] {
-  min-width: 0;
-}
