@@ -1,0 +1,34 @@
+# Orchestra Agent - Claude Only Image
+#
+# Lightweight image with just Claude Code CLI.
+# Use this for Claude-only workflows to reduce image size.
+#
+# Build: docker build -t orchestra-agent:claude -f Dockerfile.claude .
+
+FROM node:22-slim
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create agent user
+RUN useradd -m -s /bin/bash agent
+
+USER agent
+WORKDIR /home/agent
+
+# Install Claude Code CLI only
+RUN npm install -g @anthropic-ai/claude-code
+
+# tmux configuration
+RUN echo 'set -g mouse on' >> /home/agent/.tmux.conf && \
+    echo 'set -g history-limit 50000' >> /home/agent/.tmux.conf
+
+WORKDIR /workspace
+
+CMD ["bash"]
+
+LABEL org.opencontainers.image.title="Orchestra Agent (Claude)"
+LABEL org.opencontainers.image.description="Lightweight Claude-only agent image"
