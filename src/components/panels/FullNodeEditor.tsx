@@ -51,6 +51,41 @@ function createDefaultCheck(type: Check['type']): Check {
   }
 }
 
+function parseExtraArgs(text: string): string[] {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+function formatExtraArgs(args: string[]): string {
+  return args.join('\n');
+}
+
+function removeFlag(args: string[], flag: string): string[] {
+  return args.filter((a) => a !== flag);
+}
+
+function removeFlagWithValue(args: string[], flag: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === flag) {
+      // Skip the flag and its value if present
+      i += 1;
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+function upsertFlagWithValue(args: string[], flag: string, value: string | null): string[] {
+  let out = removeFlagWithValue(args, flag);
+  if (value && value.trim()) out = [...out, flag, value.trim()];
+  return out;
+}
+
 export default function FullNodeEditor({ nodeId, open, onClose }: FullNodeEditorProps) {
   const projectId = useOrchestraStore((s) => s.currentProjectId);
   const updateNode = useOrchestraStore((s) => s.updateNode);
@@ -101,14 +136,41 @@ export default function FullNodeEditor({ nodeId, open, onClose }: FullNodeEditor
       JSON.stringify(deliverables) !== JSON.stringify(node.deliverables ?? []) ||
       JSON.stringify(checks) !== JSON.stringify(node.checks ?? [])
     );
-  }, [node, title, agentType, model, launchMode, prompt, context, deliverables, checks]);
+  }, [node, title, agentType, model, extraArgsText, launchMode, prompt, context, deliverables, checks]);
+
+  const setExtraArgs = useCallback((updater: (args: string[]) => string[]) => {
+    setExtraArgsText((prev) => formatExtraArgs(updater(parseExtraArgs(prev))));
+  }, []);
+
+  const claudePermissionMode = useMemo(() => {
+    const args = parseExtraArgs(extraArgsText);
+    const idx = args.lastIndexOf('--permission-mode');
+    if (idx >= 0) return args[idx + 1] ?? '';
+    return '';
+  }, [extraArgsText]);
+
+  const claudeDangerousSkip = useMemo(() => {
+    const args = parseExtraArgs(extraArgsText);
+    return args.includes('--dangerously-skip-permissions');
+  }, [extraArgsText]);
+
+  const codexAutomation = useMemo(() => {
+    const args = parseExtraArgs(extraArgsText);
+    if (args.includes('--dangerously-bypass-approvals-and-sandbox')) return 'danger';
+    if (args.includes('--full-auto')) return 'full-auto';
+    return '';
+  }, [extraArgsText]);
+
+  const geminiApprovalMode = useMemo(() => {
+    const args = parseExtraArgs(extraArgsText);
+    const idx = args.lastIndexOf('--approval-mode');
+    if (idx >= 0) return args[idx + 1] ?? '';
+    return '';
+  }, [extraArgsText]);
 
   const handleSave = useCallback(async () => {
     if (!node) return;
-    const extraArgs = extraArgsText
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
+    const extraArgs = parseExtraArgs(extraArgsText);
     await updateNode(node.id, {
       title,
       agent: { type: agentType, model: model || undefined, extraArgs: extraArgs.length ? extraArgs : undefined },
@@ -277,18 +339,19 @@ export default function FullNodeEditor({ nodeId, open, onClose }: FullNodeEditor
               </div>
               <div className="flex-1 space-y-1">
                 <label className="text-xs text-muted-foreground">Model</label>
-                <select
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                <Input
+                  list={`model-options-${agentType}`}
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                >
-                  <option value="">Default</option>
+                  placeholder="Default"
+                />
+                <datalist id={`model-options-${agentType}`}>
                   {MODEL_OPTIONS[agentType].map((m) => (
                     <option key={m.value} value={m.value}>
                       {m.label}
                     </option>
                   ))}
-                </select>
+                </datalist>
               </div>
               <div className="flex-1 space-y-1">
                 <label className="text-xs text-muted-foreground">Launch mode</label>
@@ -304,12 +367,99 @@ export default function FullNodeEditor({ nodeId, open, onClose }: FullNodeEditor
             </div>
 
             <div className="space-y-1">
+              {agentType === 'claude' && (
+                <div className="flex gap-4">
+                  <div className="flex-1 space-y-1">
+                    <label className="text-xs text-muted-foreground">Claude mode</label>
+                    <select
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      value={claudePermissionMode}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setExtraArgs((args) => upsertFlagWithValue(args, '--permission-mode', next || null));
+                      }}
+                    >
+                      <option value="">Default</option>
+                      <option value="acceptEdits">Accept edits</option>
+                      <option value="dontAsk">Don’t ask</option>
+                      <option value="bypassPermissions">Bypass permissions</option>
+                      <option value="delegate">Delegate</option>
+                      <option value="plan">Plan</option>
+                    </select>
+                  </div>
+                  <div className="flex-1 space-y-1">
+                    <label className="text-xs text-muted-foreground">Skip permissions</label>
+                    <label className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={claudeDangerousSkip}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          setExtraArgs((args) => {
+                            let out = removeFlag(args, '--dangerously-skip-permissions');
+                            if (enabled) out = [...out, '--dangerously-skip-permissions'];
+                            return out;
+                          });
+                        }}
+                      />
+                      <span>Dangerous</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {agentType === 'codex' && (
+                <div className="flex gap-4">
+                  <div className="flex-1 space-y-1">
+                    <label className="text-xs text-muted-foreground">Codex automation</label>
+                    <select
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      value={codexAutomation}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setExtraArgs((args) => {
+                          let out = removeFlag(args, '--full-auto');
+                          out = removeFlag(out, '--dangerously-bypass-approvals-and-sandbox');
+                          if (next === 'full-auto') return [...out, '--full-auto'];
+                          if (next === 'danger') return [...out, '--dangerously-bypass-approvals-and-sandbox'];
+                          return out;
+                        });
+                      }}
+                    >
+                      <option value="">Default</option>
+                      <option value="full-auto">Full auto (workspace-write)</option>
+                      <option value="danger">Danger: bypass approvals + sandbox</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {agentType === 'gemini' && (
+                <div className="flex gap-4">
+                  <div className="flex-1 space-y-1">
+                    <label className="text-xs text-muted-foreground">Gemini approval</label>
+                    <select
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      value={geminiApprovalMode}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setExtraArgs((args) => upsertFlagWithValue(args, '--approval-mode', next || null));
+                      }}
+                    >
+                      <option value="">Default</option>
+                      <option value="auto_edit">Auto-edit</option>
+                      <option value="yolo">YOLO</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
               <label className="text-xs text-muted-foreground">Extra CLI args (one per line)</label>
               <textarea
                 className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background p-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 value={extraArgsText}
                 onChange={(e) => setExtraArgsText(e.target.value)}
-                placeholder={agentType === 'codex' ? '--yolo' : '--some-flag'}
+                placeholder={agentType === 'codex' ? '--full-auto' : '--some-flag'}
               />
             </div>
 
