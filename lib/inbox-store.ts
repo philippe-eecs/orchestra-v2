@@ -3,6 +3,7 @@ import { immer } from 'zustand/middleware/immer';
 
 export interface InboxItem {
   id: string;
+  kind: 'awaiting_input' | 'completed';
   sessionId: string;
   nodeId: string;
   nodeLabel: string;
@@ -18,7 +19,7 @@ export interface InboxState {
 
   addItem: (item: Omit<InboxItem, 'id' | 'dismissed'>) => void;
   dismissItem: (id: string) => void;
-  removeBySession: (sessionId: string) => void;
+  dismissBySessionKind: (sessionId: string, kind: InboxItem['kind']) => void;
   clearAll: () => void;
 }
 
@@ -33,8 +34,10 @@ export const useInboxStore = create<InboxState>()(
 
     addItem(item) {
       set((s) => {
-        // Don't add duplicate items for the same session
-        const existingIndex = s.items.findIndex((i) => i.sessionId === item.sessionId && !i.dismissed);
+        // Don't add duplicate items for the same session+kind
+        const existingIndex = s.items.findIndex(
+          (i) => i.sessionId === item.sessionId && i.kind === item.kind && !i.dismissed,
+        );
         if (existingIndex !== -1) {
           // Update existing item
           s.items[existingIndex] = {
@@ -65,9 +68,9 @@ export const useInboxStore = create<InboxState>()(
       });
     },
 
-    removeBySession(sessionId) {
+    dismissBySessionKind(sessionId, kind) {
       set((s) => {
-        const item = s.items.find((i) => i.sessionId === sessionId && !i.dismissed);
+        const item = s.items.find((i) => i.sessionId === sessionId && i.kind === kind && !i.dismissed);
         if (item) {
           item.dismissed = true;
           s.unreadCount = Math.max(0, s.unreadCount - 1);

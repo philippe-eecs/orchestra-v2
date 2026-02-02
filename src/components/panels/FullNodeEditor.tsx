@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Collapsible } from '@/components/ui/collapsible';
-import type { AgentType, Check, ContextRef, Deliverable } from '@/lib/types';
+import type { AgentType, Check, ContextRef, Deliverable, LaunchMode } from '@/lib/types';
 
 const AGENTS: AgentType[] = ['claude', 'codex', 'gemini'];
 
@@ -65,6 +65,8 @@ export default function FullNodeEditor({ nodeId, open, onClose }: FullNodeEditor
   const [title, setTitle] = useState('');
   const [agentType, setAgentType] = useState<AgentType>('claude');
   const [model, setModel] = useState<string>('');
+  const [extraArgsText, setExtraArgsText] = useState<string>('');
+  const [launchMode, setLaunchMode] = useState<LaunchMode>('interactive');
   const [prompt, setPrompt] = useState('');
   const [context, setContext] = useState<ContextRef[]>([]);
   const [deliverables, setDeliverables] = useState<Deliverable[]>([]);
@@ -76,6 +78,8 @@ export default function FullNodeEditor({ nodeId, open, onClose }: FullNodeEditor
       setTitle(node.title);
       setAgentType(node.agent.type);
       setModel(node.agent.model ?? '');
+      setExtraArgsText((node.agent.extraArgs ?? []).join('\n'));
+      setLaunchMode(node.launchMode ?? 'interactive');
       setPrompt(node.prompt);
       setContext(node.context ?? []);
       setDeliverables(node.deliverables ?? []);
@@ -90,24 +94,43 @@ export default function FullNodeEditor({ nodeId, open, onClose }: FullNodeEditor
       title !== node.title ||
       agentType !== node.agent.type ||
       model !== (node.agent.model ?? '') ||
+      extraArgsText !== (node.agent.extraArgs ?? []).join('\n') ||
+      launchMode !== (node.launchMode ?? 'interactive') ||
       prompt !== node.prompt ||
       JSON.stringify(context) !== JSON.stringify(node.context ?? []) ||
       JSON.stringify(deliverables) !== JSON.stringify(node.deliverables ?? []) ||
       JSON.stringify(checks) !== JSON.stringify(node.checks ?? [])
     );
-  }, [node, title, agentType, model, prompt, context, deliverables, checks]);
+  }, [node, title, agentType, model, launchMode, prompt, context, deliverables, checks]);
 
   const handleSave = useCallback(async () => {
     if (!node) return;
+    const extraArgs = extraArgsText
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
     await updateNode(node.id, {
       title,
-      agent: { type: agentType, model: model || undefined },
+      agent: { type: agentType, model: model || undefined, extraArgs: extraArgs.length ? extraArgs : undefined },
+      launchMode,
       prompt,
       context,
       deliverables,
       checks,
     });
-  }, [node, updateNode, title, agentType, model, prompt, context, deliverables, checks]);
+  }, [
+    node,
+    updateNode,
+    title,
+    agentType,
+    model,
+    extraArgsText,
+    launchMode,
+    prompt,
+    context,
+    deliverables,
+    checks,
+  ]);
 
   const handleClose = useCallback(() => {
     if (isDirty) {
@@ -210,10 +233,19 @@ export default function FullNodeEditor({ nodeId, open, onClose }: FullNodeEditor
             <Button
               size="sm"
               variant="secondary"
-              onClick={() => void runNode(node.id)}
+              onClick={() => {
+                void (async () => {
+                  if (isDirty) await handleSave();
+                  await runNode(node.id);
+                })();
+              }}
               disabled={node.status === 'running'}
             >
-              {node.status === 'running' ? 'Running...' : 'Run'}
+              {node.status === 'running'
+                ? 'Running...'
+                : launchMode === 'interactive'
+                  ? 'Start Interactive'
+                  : 'Run One-shot'}
             </Button>
             <Button size="sm" onClick={() => void handleSave()} disabled={!isDirty}>
               Save
@@ -258,6 +290,27 @@ export default function FullNodeEditor({ nodeId, open, onClose }: FullNodeEditor
                   ))}
                 </select>
               </div>
+              <div className="flex-1 space-y-1">
+                <label className="text-xs text-muted-foreground">Launch mode</label>
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={launchMode}
+                  onChange={(e) => setLaunchMode(e.target.value as LaunchMode)}
+                >
+                  <option value="interactive">Interactive (tmux chat)</option>
+                  <option value="one_shot">One-shot (stream output)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Extra CLI args (one per line)</label>
+              <textarea
+                className="min-h-[72px] w-full resize-y rounded-md border border-input bg-background p-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                value={extraArgsText}
+                onChange={(e) => setExtraArgsText(e.target.value)}
+                placeholder={agentType === 'codex' ? '--yolo' : '--some-flag'}
+              />
             </div>
 
             <div className="flex flex-1 flex-col gap-2">

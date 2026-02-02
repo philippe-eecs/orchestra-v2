@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Collapsible } from '@/components/ui/collapsible';
 import FullNodeEditor from './FullNodeEditor';
-import type { AgentType, CheckResult } from '@/lib/types';
+import type { AgentType, CheckResult, LaunchMode, NodeStatus, Session } from '@/lib/types';
 import * as api from '@/lib/api';
 
 const AGENTS: AgentType[] = ['claude', 'codex', 'gemini'];
@@ -14,7 +14,7 @@ export default function NodeEditor() {
   const selectedNodeId = useOrchestraStore((s) => s.selectedNodeId);
   const updateNode = useOrchestraStore((s) => s.updateNode);
   const deleteNode = useOrchestraStore((s) => s.deleteNode);
-  const project = useOrchestraStore((s) => (projectId ? s.projects[projectId] : null));
+  const runNode = useOrchestraStore((s) => s.runNode);
 
   const [fullEditorOpen, setFullEditorOpen] = useState(false);
   const [session, setSession] = useState<api.InteractiveSession | null>(null);
@@ -29,6 +29,13 @@ export default function NodeEditor() {
     return s.projects[projectId]?.nodes.find((n) => n.id === selectedNodeId) ?? null;
   });
 
+  const launchMode: LaunchMode = node?.launchMode ?? 'interactive';
+  const latestOneShot: Session | null = useOrchestraStore((s) => {
+    if (!selectedNodeId) return null;
+    const sid = s.latestSessionIdByNodeId[selectedNodeId];
+    return sid ? s.sessions[sid] ?? null : null;
+  });
+
   useEffect(() => {
     setSession(null);
     setOutputPreview('');
@@ -37,13 +44,15 @@ export default function NodeEditor() {
     setCopied(false);
     setCheckResults([]);
 
-    if (!node) return;
+    if (!node || launchMode !== 'interactive') return;
     let cancelled = false;
 
     void (async () => {
       try {
         const sessions = await api.listInteractiveSessions();
-        const existing = sessions.find((s) => s.nodeId === node.id && s.status === 'running') ?? null;
+        const existing =
+          sessions.find((s) => s.nodeId === node.id && (s.status === 'running' || s.status === 'awaiting_input')) ??
+          null;
         if (!cancelled) setSession(existing);
       } catch (e) {
         if (!cancelled) setSessionError(e instanceof Error ? e.message : String(e));
@@ -53,11 +62,38 @@ export default function NodeEditor() {
     return () => {
       cancelled = true;
     };
-  }, [node?.id]);
+  }, [node?.id, launchMode]);
+
+  // When an interactive node is running but we don't have the session ID yet, poll for it.
+  useEffect(() => {
+    if (!node || launchMode !== 'interactive') return;
+    if (node.status !== 'running') return;
+    if (session) return;
+
+    let cancelled = false;
+    const interval = setInterval(() => {
+      void (async () => {
+        try {
+          const sessions = await api.listInteractiveSessions();
+          const existing =
+            sessions.find((s) => s.nodeId === node.id && (s.status === 'running' || s.status === 'awaiting_input')) ??
+            null;
+          if (!cancelled) setSession(existing);
+        } catch {
+          // ignore
+        }
+      })();
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [launchMode, node?.id, node?.status, session]);
 
   // Listen for session completion events
   useEffect(() => {
-    if (!node) return;
+    if (!node || launchMode !== 'interactive') return;
 
     const nodeId = node.id;
     let cancelled = false;
@@ -95,10 +131,10 @@ export default function NodeEditor() {
       cancelled = true;
       unlistenFn?.();
     };
-  }, [node?.id, updateNode]);
+  }, [launchMode, node?.id, updateNode]);
 
   useEffect(() => {
-    if (!session || !node) return;
+    if (!session || !node || launchMode !== 'interactive') return;
 
     let cancelled = false;
     const interval = setInterval(() => {
@@ -118,7 +154,7 @@ export default function NodeEditor() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [node?.id, session?.id, updateNode]);
+  }, [launchMode, node?.id, session?.id, updateNode]);
 
   if (!node) {
     return <div className="h-full p-4 text-sm text-muted-foreground">Select a node to edit.</div>;
@@ -128,6 +164,7 @@ export default function NodeEditor() {
   const deliverablesCount = node.deliverables?.length ?? 0;
   const checksCount = node.checks?.length ?? 0;
   const promptPreview = node.prompt ? node.prompt.slice(0, 100) + (node.prompt.length > 100 ? '...' : '') : '';
+  const effectiveStatus: NodeStatus = node.status;
 
   return (
     <div className="flex h-full flex-col">
@@ -178,6 +215,22 @@ export default function NodeEditor() {
               </option>
             ))}
           </select>
+        </div>
+
+        {/* Launch mode */}
+        <div className="border-b border-border px-4 py-3">
+          <div className="text-xs text-muted-foreground mb-1">Launch mode</div>
+          <select
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            value={launchMode}
+            onChange={(e) => void updateNode(node.id, { launchMode: e.target.value as LaunchMode })}
+          >
+            <option value="interactive">Interactive (tmux chat)</option>
+            <option value="one_shot">One-shot (stream output)</option>
+          </select>
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            Interactive starts a tmux session you can attach to. One-shot runs a single command and streams output here.
+          </div>
         </div>
 
         {/* Prompt preview */}
@@ -304,28 +357,39 @@ export default function NodeEditor() {
         <div className="px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="text-xs text-muted-foreground">Output</div>
-            {session ? <div className="text-[10px] text-muted-foreground">session: {session.id}</div> : null}
+            {launchMode === 'interactive' && session ? (
+              <div className="text-[10px] text-muted-foreground">tmux: {session.id}</div>
+            ) : null}
+            {launchMode === 'one_shot' && latestOneShot ? (
+              <div className="text-[10px] text-muted-foreground">run: {latestOneShot.id}</div>
+            ) : null}
           </div>
           <pre className="mt-2 max-h-[200px] overflow-auto rounded-md border border-border bg-background p-3 text-xs leading-relaxed">
-            {outputPreview || (session ? 'Waiting for output...' : 'No session output yet.')}
+            {launchMode === 'interactive'
+              ? outputPreview || (session ? 'Waiting for output...' : 'No session output yet.')
+              : latestOneShot?.output || latestOneShot?.error || 'No run output yet.'}
           </pre>
-          {sessionError ? <div className="mt-2 text-xs text-destructive">{sessionError}</div> : null}
+          {launchMode === 'interactive' && sessionError ? (
+            <div className="mt-2 text-xs text-destructive">{sessionError}</div>
+          ) : null}
         </div>
       </div>
 
       {/* Footer */}
       <div className="border-t border-border p-4">
-        {session ? (
+        {launchMode === 'interactive' && session ? (
           <div className="space-y-3">
             <div className="flex gap-2">
               <Button
                 className="flex-1"
                 variant="secondary"
                 onClick={() => {
-                  void api.openInGhostty(session.id);
+                  void api.attachSession(session.id).catch((e) => {
+                    setSessionError(e instanceof Error ? e.message : String(e));
+                  });
                 }}
               >
-                Open in Ghostty
+                Open Terminal
               </Button>
               <Button
                 className="flex-1"
@@ -384,29 +448,21 @@ export default function NodeEditor() {
               </Button>
             </div>
           </div>
-        ) : (
+        ) : launchMode === 'interactive' ? (
           <Button
             className="w-full"
             onClick={() => {
-              void (async () => {
-                try {
-                  const newSession = await api.createInteractiveSession({
-                    nodeId: node.id,
-                    agent: node.agent.type,
-                    model: node.agent.model,
-                    prompt: node.prompt,
-                    cwd: project?.location,
-                  });
-                  setSession(newSession);
-                  setSessionError(null);
-                  void updateNode(node.id, { status: 'running' });
-                } catch (e) {
-                  setSessionError(e instanceof Error ? e.message : String(e));
-                }
-              })();
+              void runNode(node.id).catch((e) => {
+                setSessionError(e instanceof Error ? e.message : String(e));
+              });
             }}
+            disabled={effectiveStatus === 'running'}
           >
-            Start Interactive Session
+            {effectiveStatus === 'running' ? 'Starting...' : 'Start Interactive Session'}
+          </Button>
+        ) : (
+          <Button className="w-full" onClick={() => void runNode(node.id)} disabled={effectiveStatus === 'running'}>
+            {effectiveStatus === 'running' ? 'Running...' : 'Run One-shot'}
           </Button>
         )}
       </div>

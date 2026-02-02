@@ -3,7 +3,14 @@ export type AgentType = 'claude' | 'codex' | 'gemini';
 export interface AgentConfig {
   type: AgentType;
   model?: string;
+  /**
+   * Extra CLI args to pass to the underlying agent binary.
+   * Stored as tokens (no shell parsing); UI edits these as one-arg-per-line.
+   */
+  extraArgs?: string[];
 }
+
+export type LaunchMode = 'interactive' | 'one_shot';
 
 export type ContextRef =
   | { type: 'file'; path: string }
@@ -30,6 +37,7 @@ export interface Node {
   title: string;
   position: { x: number; y: number };
   agent: AgentConfig;
+  launchMode?: LaunchMode;
   prompt: string;
   context: ContextRef[];
   deliverables: Deliverable[];
@@ -76,4 +84,3 @@ export interface CheckResult {
 }
 
 export type AppView = 'dashboard' | 'canvas' | 'runs';
-

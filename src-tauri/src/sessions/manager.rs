@@ -64,13 +64,14 @@ impl SessionManager {
         node_id: &str,
         agent: &str,
         model: Option<&str>,
+        extra_args: Option<&[String]>,
         prompt: &str,
         cwd: Option<&str>,
     ) -> Result<Session, String> {
         let session_id = format!("orchestra-{}", uuid::Uuid::new_v4());
 
         let agent_kind = parse_agent(agent)?;
-        let command = build_agent_command(&session_id, agent_kind, model, prompt)?;
+        let command = build_agent_command(&session_id, agent_kind, model, extra_args, prompt)?;
 
         tmux::create_session(&session_id, &command, cwd).map_err(|e| e.0)?;
 
@@ -96,10 +97,6 @@ impl SessionManager {
         Ok(session)
     }
 
-    pub async fn get_session(&self, session_id: &str) -> Option<Session> {
-        self.sessions.lock().await.get(session_id).cloned()
-    }
-
     pub async fn list_sessions(&self) -> Vec<Session> {
         self.sessions.lock().await.values().cloned().collect()
     }
@@ -108,17 +105,6 @@ impl SessionManager {
         tmux::kill_session(session_id).map_err(|e| e.0)?;
         self.sessions.lock().await.remove(session_id);
         Ok(())
-    }
-
-    /// Returns all sessions that are currently marked as running
-    pub async fn list_running_sessions(&self) -> Vec<Session> {
-        self.sessions
-            .lock()
-            .await
-            .values()
-            .filter(|s| s.status == SessionStatus::Running)
-            .cloned()
-            .collect()
     }
 
     /// Mark a session as completed with the given exit code
@@ -136,15 +122,6 @@ impl SessionManager {
     /// Remove a session from tracking (used when session dies unexpectedly)
     pub async fn remove_session(&self, session_id: &str) {
         self.sessions.lock().await.remove(session_id);
-    }
-
-    /// Get the working directory for a session's node
-    pub async fn get_session_cwd(&self, session_id: &str) -> Option<String> {
-        self.sessions
-            .lock()
-            .await
-            .get(session_id)
-            .and_then(|s| s.cwd.clone())
     }
 
     /// Mark a session as awaiting input with optional detected question
@@ -189,12 +166,8 @@ impl SessionManager {
         }
     }
 
-    /// Set the node label for a session (for notifications)
-    pub async fn set_node_label(&self, session_id: &str, label: &str) {
-        if let Some(session) = self.sessions.lock().await.get_mut(session_id) {
-            session.node_label = Some(label.to_string());
-        }
-    }
+    // Note: node_label is included on the session struct for future UX, but we don't currently
+    // populate it from the backend project store.
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -238,9 +211,9 @@ fn build_agent_command(
     session_id: &str,
     agent: AgentKind,
     model: Option<&str>,
+    extra_args: Option<&[String]>,
     prompt: &str,
 ) -> Result<String, String> {
-    let escaped_prompt = prompt.replace('\'', "'\\''");
     let exit_file = format!("/tmp/orchestra-sessions/{}.exit", session_id);
 
     let model = match model {
@@ -251,29 +224,85 @@ fn build_agent_command(
         None => None,
     };
 
-    let agent_cmd = match agent {
+    let extra_args = extra_args.unwrap_or(&[]);
+    if extra_args.len() > 64 {
+        return Err("Too many extraArgs (max 64)".to_string());
+    }
+    for a in extra_args {
+        if a.is_empty() {
+            return Err("extraArgs contains an empty argument".to_string());
+        }
+        if a.len() > 1024 {
+            return Err("extraArgs contains an argument that is too long".to_string());
+        }
+        if a.contains('\0') {
+            return Err("extraArgs contains an invalid character".to_string());
+        }
+    }
+
+    let prompt = prompt.trim();
+    let mut argv: Vec<&str> = Vec::new();
+    match agent {
         AgentKind::Claude => {
-            let model_arg = model
-                .map(|m| format!(" --model {}", sh_escape_single_arg(m)))
-                .unwrap_or_default();
-            format!(
-                "claude{} --allowedTools Bash,Read,Write,Edit,Glob,Grep -p '{}'",
-                model_arg, escaped_prompt
-            )
+            // Claude Code CLI (aligned with `executors/local.rs`):
+            // One-shot uses `-p/--print`, but interactive sessions should start interactive by
+            // default and pass the initial message as a positional [prompt] argument.
+            //   claude --allowedTools ... --model sonnet [extraArgs...] [prompt]
+            argv.push("claude");
+            argv.push("--allowedTools");
+            argv.push("Bash,Read,Write,Edit,Glob,Grep");
+            if let Some(m) = model {
+                argv.push("--model");
+                argv.push(m);
+            }
+            for a in extra_args {
+                argv.push(a);
+            }
+            if !prompt.is_empty() {
+                argv.push(prompt);
+            }
         }
         AgentKind::Codex => {
-            let model_arg = model
-                .map(|m| format!(" --model {}", sh_escape_single_arg(m)))
-                .unwrap_or_default();
-            format!("codex{} exec '{}'", model_arg, escaped_prompt)
+            // Codex CLI (aligned with `executors/local.rs`):
+            // One-shot uses `codex exec`, but interactive sessions should omit the subcommand.
+            //   codex [--model ...] [extraArgs...] [prompt]
+            argv.push("codex");
+            if let Some(m) = model {
+                argv.push("--model");
+                argv.push(m);
+            }
+            for a in extra_args {
+                argv.push(a);
+            }
+            if !prompt.is_empty() {
+                argv.push(prompt);
+            }
         }
         AgentKind::Gemini => {
-            let model_arg = model
-                .map(|m| format!(" -m {}", sh_escape_single_arg(m)))
-                .unwrap_or_default();
-            format!("gemini{} '{}'", model_arg, escaped_prompt)
+            // Gemini CLI:
+            // Positional prompt defaults to one-shot; for interactive, use -i/--prompt-interactive.
+            //   gemini [-m model] [extraArgs...] [-i prompt]
+            argv.push("gemini");
+            if let Some(m) = model {
+                argv.push("-m");
+                argv.push(m);
+            }
+            for a in extra_args {
+                argv.push(a);
+            }
+            if !prompt.is_empty() {
+                argv.push("-i");
+                argv.push(prompt);
+            }
         }
-    };
+    }
+
+    let (prog, args) = argv.split_first().ok_or_else(|| "empty argv".to_string())?;
+    let mut agent_cmd = prog.to_string();
+    for a in args {
+        agent_cmd.push(' ');
+        agent_cmd.push_str(&sh_escape_single_arg(a));
+    }
 
     // Wrap the command to:
     // 1. Create the exit directory
@@ -281,7 +310,64 @@ fn build_agent_command(
     // 3. Capture exit code to file when agent finishes
     // 4. Drop user into shell so they can inspect results
     Ok(format!(
-        "mkdir -p /tmp/orchestra-sessions && {} ; echo $? > '{}' && echo '\\n✓ Agent finished. You can inspect results or type exit to close.' && exec ${{SHELL:-/bin/bash}}",
+        "mkdir -p /tmp/orchestra-sessions && {} ; echo $? > '{}' && echo '\\n✓ Session ended. Type exit to close.' && exec ${{SHELL:-/bin/bash}}",
         agent_cmd, exit_file
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_agent_command_claude_includes_prompt_flag() {
+        let cmd = build_agent_command(
+            "orchestra-test",
+            AgentKind::Claude,
+            Some("sonnet"),
+            None,
+            "hello",
+        )
+        .expect("command");
+        assert!(cmd.contains("claude"), "cmd was: {}", cmd);
+        assert!(cmd.contains("'hello'"), "cmd was: {}", cmd);
+        assert!(
+            cmd.contains("'--allowedTools' 'Bash,Read,Write,Edit,Glob,Grep'"),
+            "cmd was: {}",
+            cmd
+        );
+        assert!(cmd.contains("'--model' 'sonnet'"), "cmd was: {}", cmd);
+    }
+
+    #[test]
+    fn build_agent_command_codex_is_interactive_by_default() {
+        let cmd = build_agent_command(
+            "orchestra-test",
+            AgentKind::Codex,
+            Some("gpt-5"),
+            None,
+            "do it",
+        )
+        .expect("command");
+        assert!(cmd.contains("codex"), "cmd was: {}", cmd);
+        assert!(!cmd.contains("'exec'"), "cmd was: {}", cmd);
+        assert!(cmd.contains("'do it'"), "cmd was: {}", cmd);
+    }
+
+    #[test]
+    fn build_agent_command_codex_includes_extra_args_before_prompt() {
+        let cmd = build_agent_command(
+            "orchestra-test",
+            AgentKind::Codex,
+            Some("gpt-5"),
+            Some(&vec!["--yolo".to_string()]),
+            "do it",
+        )
+        .expect("command");
+        assert!(
+            cmd.contains("codex '--model' 'gpt-5' '--yolo' 'do it'"),
+            "cmd was: {}",
+            cmd
+        );
+    }
 }

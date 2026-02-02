@@ -28,25 +28,19 @@ fn escape_applescript(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn find_ghostty_binary() -> Option<PathBuf> {
-    if let Ok(path) = which::which("ghostty") {
-        return Some(path);
-    }
-
-    let candidates = [
-        "/Applications/Ghostty.app/Contents/MacOS/ghostty",
-        "/Applications/Ghostty.app/Contents/MacOS/Ghostty",
-    ];
+#[cfg(target_os = "macos")]
+fn find_ghostty_app_bundle() -> Option<PathBuf> {
+    let candidates = ["/Applications/Ghostty.app", "/Applications/ghostty.app"];
     for p in candidates {
         let pb = PathBuf::from(p);
-        if pb.is_file() {
+        if pb.is_dir() {
             return Some(pb);
         }
     }
 
     if let Ok(home) = std::env::var("HOME") {
-        let pb = PathBuf::from(home).join("Applications/Ghostty.app/Contents/MacOS/ghostty");
-        if pb.is_file() {
+        let pb = PathBuf::from(home).join("Applications/Ghostty.app");
+        if pb.is_dir() {
             return Some(pb);
         }
     }
@@ -60,6 +54,8 @@ pub struct CreateInteractiveSessionInput {
     pub node_id: String,
     pub agent: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub extra_args: Option<Vec<String>>,
     pub prompt: String,
     pub cwd: Option<String>,
 }
@@ -94,6 +90,7 @@ pub async fn create_interactive_session(
             &input.node_id,
             &input.agent,
             input.model.as_deref(),
+            input.extra_args.as_deref(),
             &input.prompt,
             input.cwd.as_deref(),
         )
@@ -105,32 +102,33 @@ pub async fn attach_session(input: SessionIdInput) -> Result<(), String> {
     validate_session_id(&input.session_id)?;
 
     let terminal = std::env::var("ORCHESTRA_TERMINAL").unwrap_or_else(|_| "Ghostty".to_string());
-    let attach_cmd = tmux::get_attach_command(&input.session_id);
+    let session_id = input.session_id;
 
     #[cfg(target_os = "macos")]
     {
         // Try to invoke terminal directly for proper -e support
         let result = match terminal.as_str() {
             "Ghostty" => {
-                if let Some(ghostty_path) = find_ghostty_binary() {
-                    std::process::Command::new(ghostty_path)
-                        .args(["-e", "sh", "-c", &attach_cmd])
-                        .spawn()
-                } else {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "Ghostty not found",
-                    ))
-                }
+                // Ghostty docs: on macOS, launching the emulator from the binary isn't supported; use `open`.
+                let app = find_ghostty_app_bundle()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Ghostty".to_string());
+                std::process::Command::new("open")
+                    .args(["-a", &app, "--args", "-e", "tmux", "attach", "-t", &session_id])
+                    .spawn()
             }
             "Terminal" => {
                 // macOS Terminal.app uses osascript for command execution
                 // Escape the command to prevent AppleScript injection
+                let attach_cmd = tmux::get_attach_command(&session_id);
                 let escaped_cmd = escape_applescript(&attach_cmd);
                 std::process::Command::new("osascript")
                     .args([
                         "-e",
-                        &format!("tell app \"Terminal\" to do script \"{}\"", escaped_cmd),
+                        &format!(
+                            "tell application \"Terminal\" to\nactivate\nif (count of windows) is 0 then\n  do script \"{}\"\nelse\n  do script \"{}\" in front window\nend if\nend tell",
+                            escaped_cmd, escaped_cmd
+                        ),
                     ])
                     .spawn()
             }
@@ -138,18 +136,22 @@ pub async fn attach_session(input: SessionIdInput) -> Result<(), String> {
                 // Best-effort: ask macOS to open the app and pass args.
                 // Not all terminals support `-e`, but we fall back to Terminal.app below.
                 std::process::Command::new("open")
-                    .args(["-a", other, "--args", "-e", "sh", "-c", &attach_cmd])
+                    .args(["-a", other, "--args", "-e", "tmux", "attach", "-t", &session_id])
                     .spawn()
             }
         };
 
         if result.is_err() {
             // Fallback to Terminal.app with escaped command
+            let attach_cmd = tmux::get_attach_command(&session_id);
             let escaped_cmd = escape_applescript(&attach_cmd);
             std::process::Command::new("osascript")
                 .args([
                     "-e",
-                    &format!("tell app \"Terminal\" to do script \"{}\"", escaped_cmd),
+                    &format!(
+                        "tell application \"Terminal\" to\nactivate\nif (count of windows) is 0 then\n  do script \"{}\"\nelse\n  do script \"{}\" in front window\nend if\nend tell",
+                        escaped_cmd, escaped_cmd
+                    ),
                 ])
                 .spawn()
                 .map_err(|e| format!("Failed to open terminal: {}", e))?;
@@ -158,6 +160,7 @@ pub async fn attach_session(input: SessionIdInput) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
+        let attach_cmd = tmux::get_attach_command(&session_id);
         let terminals = ["ghostty", "alacritty", "kitty", "gnome-terminal", "xterm"];
         for term in terminals {
             if which::which(term).is_ok() {
@@ -212,19 +215,22 @@ pub fn get_attach_command(input: SessionIdInput) -> Result<String, String> {
 #[tauri::command]
 pub fn open_in_ghostty(input: SessionIdInput) -> Result<(), String> {
     validate_session_id(&input.session_id)?;
-    let attach_cmd = tmux::get_attach_command(&input.session_id);
+    let session_id = input.session_id;
 
     #[cfg(target_os = "macos")]
     {
-        let ghostty_path = find_ghostty_binary().ok_or_else(|| "Ghostty not found".to_string())?;
-        std::process::Command::new(ghostty_path)
-            .args(["-e", "sh", "-c", &attach_cmd])
+        let app = find_ghostty_app_bundle()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Ghostty".to_string());
+        std::process::Command::new("open")
+            .args(["-a", &app, "--args", "-e", "tmux", "attach", "-t", &session_id])
             .spawn()
             .map_err(|e| format!("Failed to open Ghostty: {}", e))?;
     }
 
     #[cfg(target_os = "linux")]
     {
+        let attach_cmd = tmux::get_attach_command(&session_id);
         std::process::Command::new("ghostty")
             .args(["-e", "sh", "-c", &attach_cmd])
             .spawn()

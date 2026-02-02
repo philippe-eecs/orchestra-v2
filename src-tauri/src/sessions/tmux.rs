@@ -76,14 +76,34 @@ pub fn send_keys(session_id: &str, keys: &str) -> Result<(), TmuxError> {
         ));
     }
 
-    let output = Command::new("tmux")
-        .args(["send-keys", "-t", session_id, keys, "Enter"])
+    // Use `-l` to send literal text (so user input isn't interpreted as tmux key names).
+    // Then send a real Enter key (CR), because a literal '\n' is not reliably equivalent.
+    if !keys.is_empty() {
+        // Chunk to avoid hitting OS argv length limits on very large prompts.
+        // (Chunk size is in chars; tmux consumes bytes on the PTY side.)
+        const CHUNK_CHARS: usize = 2000;
+        let chars: Vec<char> = keys.chars().collect();
+        for chunk in chars.chunks(CHUNK_CHARS) {
+            let chunk_str: String = chunk.iter().collect();
+            let out = Command::new("tmux")
+                .args(["send-keys", "-t", session_id, "-l", &chunk_str])
+                .output()
+                .map_err(|e| TmuxError(e.to_string()))?;
+            if !out.status.success() {
+                return Err(TmuxError(
+                    String::from_utf8_lossy(&out.stderr).to_string(),
+                ));
+            }
+        }
+    }
+
+    let enter = Command::new("tmux")
+        .args(["send-keys", "-t", session_id, "Enter"])
         .output()
         .map_err(|e| TmuxError(e.to_string()))?;
-
-    if !output.status.success() {
+    if !enter.status.success() {
         return Err(TmuxError(
-            String::from_utf8_lossy(&output.stderr).to_string(),
+            String::from_utf8_lossy(&enter.stderr).to_string(),
         ));
     }
     Ok(())
@@ -107,33 +127,6 @@ pub fn kill_session(session_id: &str) -> Result<(), TmuxError> {
         ));
     }
     Ok(())
-}
-
-pub fn list_sessions() -> Result<Vec<String>, TmuxError> {
-    if !is_available() {
-        return Err(TmuxError(
-            "tmux is not installed or not on PATH".to_string(),
-        ));
-    }
-
-    let output = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output()
-        .map_err(|e| TmuxError(e.to_string()))?;
-
-    if !output.status.success() {
-        return Err(TmuxError(
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ));
-    }
-
-    let sessions: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|s| s.starts_with("orchestra-"))
-        .map(|s| s.to_string())
-        .collect();
-
-    Ok(sessions)
 }
 
 pub fn get_attach_command(session_id: &str) -> String {

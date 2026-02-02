@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 /// Represents a check to validate after an agent completes
 #[derive(Debug, Clone, Deserialize)]
@@ -45,13 +47,29 @@ pub enum Check {
 }
 
 impl Check {
-    pub fn id(&self) -> &str {
+    fn retry_config(&self) -> (bool, u32) {
         match self {
-            Check::FileExists { id, .. } => id,
-            Check::Command { id, .. } => id,
-            Check::Contains { id, .. } => id,
-            Check::HumanApproval { id } => id,
-            Check::TestRunner { id, .. } => id,
+            Check::FileExists {
+                auto_retry,
+                max_retries,
+                ..
+            }
+            | Check::Command {
+                auto_retry,
+                max_retries,
+                ..
+            }
+            | Check::Contains {
+                auto_retry,
+                max_retries,
+                ..
+            }
+            | Check::TestRunner {
+                auto_retry,
+                max_retries,
+                ..
+            } => (auto_retry.unwrap_or(false), max_retries.unwrap_or(2).min(10)),
+            Check::HumanApproval { .. } => (false, 0),
         }
     }
 }
@@ -68,14 +86,28 @@ pub struct CheckResult {
 
 /// Run all checks and return results
 pub fn run_checks(checks: &[Check], cwd: Option<&str>) -> Vec<CheckResult> {
-    checks
-        .iter()
-        .map(|check| run_single_check(check, cwd))
-        .collect()
+    checks.iter().map(|check| run_single_check(check, cwd)).collect()
 }
 
 /// Run a single check and return its result
 pub fn run_single_check(check: &Check, cwd: Option<&str>) -> CheckResult {
+    let (auto_retry, max_retries) = check.retry_config();
+    let mut attempt = 0u32;
+    loop {
+        let result = run_single_check_once(check, cwd);
+        if result.passed {
+            return result;
+        }
+        if !auto_retry || attempt >= max_retries {
+            return result;
+        }
+        attempt += 1;
+        // Small backoff for eventual consistency (file writes, test runners, etc.)
+        thread::sleep(Duration::from_millis(300));
+    }
+}
+
+fn run_single_check_once(check: &Check, cwd: Option<&str>) -> CheckResult {
     match check {
         Check::FileExists { id, path, .. } => {
             let full_path = resolve_path(path, cwd);
@@ -127,9 +159,7 @@ pub fn run_single_check(check: &Check, cwd: Option<&str>) -> CheckResult {
             }
         }
 
-        Check::Contains {
-            id, path, pattern, ..
-        } => {
+        Check::Contains { id, path, pattern, .. } => {
             let full_path = resolve_path(path, cwd);
             match std::fs::read_to_string(&full_path) {
                 Ok(content) => {
@@ -188,7 +218,7 @@ pub fn run_single_check(check: &Check, cwd: Option<&str>) -> CheckResult {
                 auto_retry: None,
                 max_retries: None,
             };
-            let mut result = run_single_check(&temp_check, cwd);
+            let mut result = run_single_check_once(&temp_check, cwd);
             result.check_type = "test_runner".into();
             result
         }

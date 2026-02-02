@@ -23,7 +23,7 @@ export interface InteractiveSession {
   id: string;
   nodeId: string;
   agent: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'awaiting_input' | 'completed' | 'failed';
   createdAt: number;
 }
 
@@ -79,6 +79,56 @@ export async function createProject(input: { name: string; description?: string 
   return project;
 }
 
+export async function createTestProject(): Promise<Project> {
+  if (isTauri()) return invoke<Project>('create_test_project');
+
+  const projects = readLocalProjects();
+  const id = randomId();
+  const ts = now();
+
+  const node = (partial: any) => ({
+    id: randomId(),
+    title: 'Node',
+    position: { x: 100, y: 100 },
+    agent: { type: 'claude' },
+    prompt: '',
+    context: [],
+    deliverables: [],
+    checks: [],
+    status: 'pending',
+    ...partial,
+  });
+
+  const project: Project = {
+    id,
+    name: 'Test',
+    description: 'Template project for exercising Orchestra features.',
+    nodes: [
+      node({
+        title: 'Interactive: Chat (Claude)',
+        position: { x: 120, y: 120 },
+        agent: { type: 'claude', model: 'sonnet' },
+        launchMode: 'interactive',
+        prompt: 'Say hello, then ask me a yes/no question and wait for my input.',
+      }),
+      node({
+        title: 'One-shot: Stream output (Claude)',
+        position: { x: 520, y: 120 },
+        agent: { type: 'claude', model: 'sonnet' },
+        launchMode: 'one_shot',
+        prompt: 'Print a single line that says: OK. Then exit.',
+      }),
+    ],
+    edges: [],
+    createdAt: ts,
+    updatedAt: ts,
+  };
+
+  projects[id] = project;
+  writeLocalProjects(projects);
+  return project;
+}
+
 export async function saveProject(project: Project): Promise<Project> {
   if (isTauri()) return invoke<Project>('save_project', { project });
   const projects = readLocalProjects();
@@ -101,6 +151,7 @@ export async function executeNode(input: {
   nodeId: string;
   agent: AgentType;
   model?: string;
+  extraArgs?: string[];
   prompt: string;
   cwd?: string;
 }): Promise<{ sessionId: string }> {
@@ -185,6 +236,7 @@ export async function createInteractiveSession(input: {
   nodeId: string;
   agent: AgentType;
   model?: string;
+  extraArgs?: string[];
   prompt: string;
   cwd?: string;
 }): Promise<InteractiveSession> {

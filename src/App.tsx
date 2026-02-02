@@ -26,7 +26,7 @@ export default function App() {
   const loadProjects = useOrchestraStore((s) => s.loadProjects);
   const unreadCount = useInboxStore((s) => s.unreadCount);
   const addItem = useInboxStore((s) => s.addItem);
-  const removeBySession = useInboxStore((s) => s.removeBySession);
+  const dismissBySessionKind = useInboxStore((s) => s.dismissBySessionKind);
   const markAwaitingInput = useOrchestraStore((s) => s.markAwaitingInput);
   const markNodeStatus = useOrchestraStore((s) => s.markNodeStatus);
   const markInputResolved = useOrchestraStore((s) => s.markInputResolved);
@@ -45,6 +45,7 @@ export default function App() {
     api.listenSessionAwaitingInput((event) => {
       // Add to inbox
       addItem({
+        kind: 'awaiting_input',
         sessionId: event.sessionId,
         nodeId: event.nodeId,
         nodeLabel: event.nodeLabel,
@@ -74,7 +75,25 @@ export default function App() {
     let unlisten: (() => void) | undefined;
 
     api.listenSessionCompleted((event) => {
-      removeBySession(event.sessionId);
+      // Replace any awaiting-input item with a completion item.
+      dismissBySessionKind(event.sessionId, 'awaiting_input');
+
+      // Best-effort node label lookup for the inbox
+      const state = useOrchestraStore.getState();
+      const nodeLabel =
+        Object.values(state.projects)
+          .flatMap((p) => p.nodes)
+          .find((n) => n.id === event.nodeId)?.title ?? event.nodeId;
+
+      addItem({
+        kind: 'completed',
+        sessionId: event.sessionId,
+        nodeId: event.nodeId,
+        nodeLabel,
+        question: null,
+        outputPreview: (event.output ?? '').slice(-800),
+        timestamp: Date.now(),
+      });
 
       let status: NodeStatus = event.success ? 'completed' : 'failed';
       const hasAwaitingApproval = event.checkResults?.some((r) => r.checkType === 'human_approval' && !r.passed);
@@ -92,7 +111,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, [markNodeStatus, removeBySession]);
+  }, [addItem, dismissBySessionKind, markNodeStatus]);
 
   // Clear inbox items when sessions resume producing output
   useEffect(() => {
@@ -100,7 +119,7 @@ export default function App() {
     let unlisten: (() => void) | undefined;
 
     api.listenSessionAwaitingInputCleared((event) => {
-      removeBySession(event.sessionId);
+      dismissBySessionKind(event.sessionId, 'awaiting_input');
       markInputResolved(event.nodeId);
     }).then((fn) => {
       if (cancelled) {
@@ -114,7 +133,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, [markInputResolved, removeBySession]);
+  }, [dismissBySessionKind, markInputResolved]);
 
   return (
     <div className="h-full w-full">

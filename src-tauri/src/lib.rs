@@ -4,7 +4,7 @@ mod sessions;
 mod state;
 
 use sessions::manager::SessionManager;
-use tauri::Manager;
+use tauri::{Manager, WindowEvent};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,11 +24,23 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(state::AppState::new())
         .manage(SessionManager::new())
+        .on_window_event(|window, event| {
+            // Avoid treating a window close as an app crash; keep the process alive and minimize instead.
+            // Users can quit explicitly via Cmd+Q (macOS) or the app menu.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.minimize();
+            }
+        })
         .setup(|app| {
             // Get the main window for event emission
             let window = app
                 .get_webview_window("main")
-                .expect("main window should exist");
+                .or_else(|| app.webview_windows().into_values().next());
+            let Some(window) = window else {
+                tracing::error!("No webview window found; session monitor not started");
+                return Ok(());
+            };
 
             // Get state for accessing projects
             let app_state = app.state::<state::AppState>().inner().clone();
@@ -45,6 +57,7 @@ pub fn run() {
             commands::projects::list_projects,
             commands::projects::get_project,
             commands::projects::create_project,
+            commands::projects::create_test_project,
             commands::projects::save_project,
             commands::projects::delete_project,
             commands::execution::execute_node,

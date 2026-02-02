@@ -32,6 +32,9 @@ which = "7"
 
 # macOS-specific dependencies can be added here if needed
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

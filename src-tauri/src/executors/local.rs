@@ -13,6 +13,8 @@ fn default_model(agent: &str) -> Option<&'static str> {
 pub fn spawn_agent(
     agent: &str,
     model: Option<&str>,
+    extra_args: Option<&[String]>,
+    prompt: &str,
     cwd: &Option<String>,
 ) -> Result<tokio::process::Child, String> {
     let bin = which::which(agent).map_err(|_| format!("Could not find `{agent}` on PATH"))?;
@@ -23,16 +25,19 @@ pub fn spawn_agent(
     }
 
     // Add agent-specific arguments
+    let extra_args = extra_args.unwrap_or(&[]);
     match agent {
         "claude" => {
             // Claude Code CLI: claude -p "prompt" --model sonnet
-            cmd.arg("-p"); // Read prompt from next arg (we'll pass via stdin actually)
+            cmd.arg("-p");
+            cmd.arg(prompt);
             cmd.arg("--allowedTools");
             cmd.arg("Bash,Read,Write,Edit,Glob,Grep"); // Common tools
             if let Some(m) = model.or_else(|| default_model(agent)) {
                 cmd.arg("--model");
                 cmd.arg(m);
             }
+            cmd.args(extra_args);
         }
         "codex" => {
             // Codex CLI: codex exec "prompt"
@@ -41,6 +46,8 @@ pub fn spawn_agent(
                 cmd.arg("--model");
                 cmd.arg(m);
             }
+            cmd.args(extra_args);
+            cmd.arg(prompt);
         }
         "gemini" => {
             // Gemini CLI: gemini "prompt" -m model
@@ -48,11 +55,14 @@ pub fn spawn_agent(
                 cmd.arg("-m");
                 cmd.arg(m);
             }
+            cmd.args(extra_args);
+            cmd.arg(prompt);
         }
         _ => {}
     }
 
-    cmd.stdin(Stdio::piped())
+    // One-shot execution should not require stdin; prompts are passed as args above.
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

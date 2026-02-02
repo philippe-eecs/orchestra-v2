@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
-use tokio::io::AsyncWriteExt;
 
 use crate::executors;
 use crate::state::{AppState, RunningProcess};
@@ -12,6 +11,8 @@ pub struct ExecuteNodeInput {
     pub node_id: String,
     pub agent: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub extra_args: Option<Vec<String>>,
     pub prompt: String,
     pub cwd: Option<String>,
 }
@@ -116,18 +117,13 @@ pub async fn execute_node(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let mut child =
-        executors::local::spawn_agent(&input.agent, input.model.as_deref(), &input.cwd)?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input.prompt.as_bytes())
-            .await
-            .map_err(|e| format!("failed writing stdin: {e}"))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|e| format!("failed closing stdin: {e}"))?;
-    }
+        executors::local::spawn_agent(
+            &input.agent,
+            input.model.as_deref(),
+            input.extra_args.as_deref(),
+            &input.prompt,
+            &input.cwd,
+        )?;
 
     let stdout = child
         .stdout

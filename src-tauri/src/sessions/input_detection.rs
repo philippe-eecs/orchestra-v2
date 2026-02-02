@@ -10,17 +10,20 @@ pub struct InputDetectionResult {
     pub waiting_for_input: bool,
     /// The detected question or prompt text, if any
     pub detected_question: Option<String>,
-    /// Confidence level (0.0 - 1.0)
-    pub confidence: f32,
 }
 
 /// Patterns that indicate an agent is waiting for input
 const QUESTION_ENDINGS: &[&str] = &["?"];
 
-const PROMPT_INDICATORS: &[&str] = &[
+// Prompt indicators are split into "weak" (very common in normal output) and "strong" (high-signal
+// that user input is expected).
+const WEAK_PROMPT_INDICATORS: &[&str] = &[
     "> ",
     ">> ",
     ">>> ",
+];
+
+const STRONG_PROMPT_INDICATORS: &[&str] = &[
     "[y/n]",
     "[Y/n]",
     "[y/N]",
@@ -99,7 +102,12 @@ fn extract_question(text: &str) -> Option<String> {
         }
 
         // Check for prompt indicators
-        for pattern in PROMPT_INDICATORS {
+        for pattern in STRONG_PROMPT_INDICATORS {
+            if trimmed.contains(pattern) {
+                return Some(trimmed.to_string());
+            }
+        }
+        for pattern in WEAK_PROMPT_INDICATORS {
             if trimmed.contains(pattern) {
                 return Some(trimmed.to_string());
             }
@@ -157,11 +165,19 @@ pub fn detect_input_waiting(output: &str, agent: &str) -> InputDetectionResult {
     let recent_lower = recent_output.to_lowercase();
 
     // Check for prompt indicators (case-insensitive)
-    if PROMPT_INDICATORS
+    //
+    // Strong indicators like [y/n] should be enough on their own; weak indicators like "> "
+    // should only provide a small bump to avoid false positives.
+    let strong_prompt = STRONG_PROMPT_INDICATORS
+        .iter()
+        .any(|p| recent_lower.contains(&p.to_lowercase()));
+    if strong_prompt {
+        confidence += 0.6;
+    } else if WEAK_PROMPT_INDICATORS
         .iter()
         .any(|p| recent_lower.contains(&p.to_lowercase()))
     {
-        confidence += 0.3;
+        confidence += 0.15;
     }
 
     // Check for Claude-specific patterns (case-insensitive)
@@ -189,7 +205,6 @@ pub fn detect_input_waiting(output: &str, agent: &str) -> InputDetectionResult {
     InputDetectionResult {
         waiting_for_input: confidence >= 0.5,
         detected_question,
-        confidence,
     }
 }
 

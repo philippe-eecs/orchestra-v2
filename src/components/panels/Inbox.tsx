@@ -17,28 +17,42 @@ function formatRelativeTime(timestamp: number): string {
 interface InboxItemRowProps {
   item: InboxItem;
   onOpen: () => void;
-  onOpenGhostty: () => void;
+  onOpenTerminal: () => void;
   onDismiss: () => void;
 }
 
-function InboxItemRow({ item, onOpen, onOpenGhostty, onDismiss }: InboxItemRowProps) {
+function InboxItemRow({ item, onOpen, onOpenTerminal, onDismiss }: InboxItemRowProps) {
+  const dotClass =
+    item.kind === 'completed' ? 'bg-green-500' : 'bg-orange-500 animate-pulse';
+  const tag =
+    item.kind === 'completed' ? (
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-600 border border-green-500/20">
+        completed
+      </span>
+    ) : (
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-600 border border-orange-500/20">
+        awaiting input
+      </span>
+    );
+
   return (
     <div className="border-b border-border p-4 hover:bg-muted/30 transition-colors">
       <div className="flex items-center gap-2 mb-2">
-        <span className="h-2 w-2 rounded-full bg-orange-500 animate-pulse" />
+        <span className={`h-2 w-2 rounded-full ${dotClass}`} />
         <span className="font-medium truncate">{item.nodeLabel}</span>
+        {tag}
         <span className="ml-auto text-xs text-muted-foreground shrink-0">
           {formatRelativeTime(item.timestamp)}
         </span>
       </div>
 
-      {item.question && (
+      {item.question && item.kind === 'awaiting_input' && (
         <div className="text-sm bg-muted/50 rounded px-2 py-1.5 mb-3 whitespace-pre-wrap break-words">
           {item.question}
         </div>
       )}
 
-      {!item.question && item.outputPreview && (
+      {(!item.question || item.kind === 'completed') && item.outputPreview && (
         <div className="text-xs text-muted-foreground bg-muted/30 rounded px-2 py-1.5 mb-3 max-h-20 overflow-hidden font-mono whitespace-pre-wrap break-words">
           {item.outputPreview}
         </div>
@@ -61,8 +75,8 @@ function InboxItemRow({ item, onOpen, onOpenGhostty, onDismiss }: InboxItemRowPr
           </svg>
           Open Session
         </Button>
-        <Button size="sm" variant="secondary" onClick={onOpenGhostty}>
-          Open in Ghostty
+        <Button size="sm" variant="secondary" onClick={onOpenTerminal}>
+          Open Terminal
         </Button>
         <Button size="sm" variant="ghost" onClick={onDismiss}>
           Dismiss
@@ -88,11 +102,11 @@ export default function Inbox({ onClose }: InboxProps) {
     onClose?.();
   };
 
-  const handleOpenGhostty = async (item: InboxItem) => {
+  const handleOpenTerminal = async (item: InboxItem) => {
     try {
-      await api.openInGhostty(item.sessionId);
+      await api.attachSession(item.sessionId);
     } catch (e) {
-      console.error('Failed to open in Ghostty:', e);
+      console.error('Failed to open terminal:', e);
     }
   };
 
@@ -143,7 +157,7 @@ export default function Inbox({ onClose }: InboxProps) {
               key={item.id}
               item={item}
               onOpen={() => handleOpen(item)}
-              onOpenGhostty={() => handleOpenGhostty(item)}
+              onOpenTerminal={() => handleOpenTerminal(item)}
               onDismiss={() => dismissItem(item.id)}
             />
           ))

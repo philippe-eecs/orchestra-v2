@@ -11,6 +11,7 @@ export default function CanvasView() {
   const projectId = useOrchestraStore((s) => s.currentProjectId);
   const openProject = useOrchestraStore((s) => s.openProject);
   const createProject = useOrchestraStore((s) => s.createProject);
+  const createTestProject = useOrchestraStore((s) => s.createTestProject);
   const addNode = useOrchestraStore((s) => s.addNode);
 
   const [name, setName] = useState('My Project');
@@ -86,6 +87,17 @@ export default function CanvasView() {
             </DialogContent>
           </Dialog>
 
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              void createTestProject();
+            }}
+            title="Creates or refreshes a prebuilt Test project"
+          >
+            Test Project
+          </Button>
+
           <div className="ml-auto flex items-center gap-2">
             <Button size="sm" onClick={() => void addNode({ position: { x: 120, y: 120 } })} disabled={!current}>
               Add Node
@@ -110,4 +122,3 @@ export default function CanvasView() {
     </div>
   );
 }
-

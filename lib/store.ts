@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import type { AppView, Edge, Node, NodeStatus, Project, Session } from './types';
+import type { AppView, Edge, LaunchMode, Node, NodeStatus, Project, Session } from './types';
 import * as api from './api';
 
 function now() {
@@ -17,6 +17,7 @@ function defaultNode(partial?: Partial<Node>): Node {
     title: 'New Node',
     position: { x: 100, y: 100 },
     agent: { type: 'claude' },
+    launchMode: 'interactive',
     prompt: '',
     context: [],
     deliverables: [],
@@ -45,6 +46,7 @@ export type OrchestraState = {
 
   loadProjects: () => Promise<void>;
   createProject: (input: { name: string; description?: string }) => Promise<Project>;
+  createTestProject: () => Promise<Project>;
   openProject: (id: string) => Promise<void>;
   saveCurrentProject: () => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
@@ -85,10 +87,30 @@ export const useOrchestraStore = create<OrchestraState>()(
         s.projects = Object.fromEntries(projects.map((p) => [p.id, p]));
         if (!s.currentProjectId && projects.length) s.currentProjectId = projects[0]!.id;
       });
+
+      // Convenience: auto-create a Test project on first run.
+      if (projects.length === 0) {
+        const test = await api.createTestProject();
+        set((s) => {
+          s.projects[test.id] = test;
+          s.currentProjectId = test.id;
+          s.selectedNodeId = null;
+        });
+      }
     },
 
     async createProject(input) {
       const project = await api.createProject(input);
+      set((s) => {
+        s.projects[project.id] = project;
+        s.currentProjectId = project.id;
+        s.selectedNodeId = null;
+      });
+      return project;
+    },
+
+    async createTestProject() {
+      const project = await api.createTestProject();
       set((s) => {
         s.projects[project.id] = project;
         s.currentProjectId = project.id;
@@ -317,6 +339,35 @@ export const useOrchestraStore = create<OrchestraState>()(
       const node = project.nodes.find((n) => n.id === nodeId);
       if (!node) return;
 
+      const launchMode: LaunchMode = node.launchMode ?? 'interactive';
+
+      if (launchMode === 'interactive') {
+        set((s) => {
+          const p = s.projects[currentProjectId];
+          if (!p) return;
+          const n = p.nodes.find((x) => x.id === nodeId);
+          if (!n) return;
+          n.status = 'running';
+        });
+        await get().saveCurrentProject();
+
+        try {
+          await api.createInteractiveSession({
+            nodeId: node.id,
+            agent: node.agent.type,
+            model: node.agent.model,
+            extraArgs: node.agent.extraArgs,
+            prompt: node.prompt,
+            cwd: project.location,
+          });
+        } catch (e) {
+          get().markNodeStatus(nodeId, 'failed');
+          throw e;
+        }
+
+        return;
+      }
+
       const sessionId = randomId();
       get().startSession(nodeId, sessionId);
 
@@ -335,6 +386,7 @@ export const useOrchestraStore = create<OrchestraState>()(
           nodeId: node.id,
           agent: node.agent.type,
           model: node.agent.model,
+          extraArgs: node.agent.extraArgs,
           prompt: node.prompt,
           cwd: project.location,
         });
