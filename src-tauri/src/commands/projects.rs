@@ -9,6 +9,8 @@ use crate::state::AppState;
 pub struct AgentConfig {
     pub r#type: String,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +199,7 @@ You can delete it at any time; Orchestra will recreate it when you re-create the
         agent: AgentConfig {
             r#type: "claude".into(),
             model: Some("sonnet".into()),
+            extra_args: None,
         },
         launch_mode: Some("interactive".into()),
         prompt: "Say hello, then ask me a yes/no question and wait for my input.".into(),
@@ -213,6 +216,7 @@ You can delete it at any time; Orchestra will recreate it when you re-create the
         agent: AgentConfig {
             r#type: "claude".into(),
             model: Some("sonnet".into()),
+            extra_args: None,
         },
         launch_mode: Some("one_shot".into()),
         prompt: "Print a single line that says: OK. Then exit.".into(),
@@ -229,6 +233,7 @@ You can delete it at any time; Orchestra will recreate it when you re-create the
         agent: AgentConfig {
             r#type: "claude".into(),
             model: Some("sonnet".into()),
+            extra_args: None,
         },
         launch_mode: Some("one_shot".into()),
         prompt: "Print: Ready for approval. Then exit with code 0.".into(),
@@ -248,6 +253,7 @@ You can delete it at any time; Orchestra will recreate it when you re-create the
         agent: AgentConfig {
             r#type: "claude".into(),
             model: Some("sonnet".into()),
+            extra_args: None,
         },
         launch_mode: Some("one_shot".into()),
         prompt: format!(
@@ -271,6 +277,7 @@ You can delete it at any time; Orchestra will recreate it when you re-create the
         agent: AgentConfig {
             r#type: "codex".into(),
             model: Some("codex-1".into()),
+            extra_args: None,
         },
         launch_mode: Some("one_shot".into()),
         prompt: "Say: Codex is wired up. Then exit.".into(),
@@ -287,6 +294,7 @@ You can delete it at any time; Orchestra will recreate it when you re-create the
         agent: AgentConfig {
             r#type: "gemini".into(),
             model: Some("gemini-2.5-pro".into()),
+            extra_args: None,
         },
         launch_mode: Some("interactive".into()),
         prompt: "Say hello and ask me what to do next. Wait for input.".into(),
