@@ -9,6 +9,19 @@ import * as api from '@/lib/api';
 
 const AGENTS: AgentType[] = ['claude', 'codex', 'gemini'];
 
+const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]> = {
+  claude: [
+    { value: 'sonnet', label: 'Sonnet' },
+    { value: 'opus', label: 'Opus' },
+    { value: 'haiku', label: 'Haiku' },
+  ],
+  codex: [{ value: 'codex-1', label: 'Codex 1' }],
+  gemini: [
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  ],
+};
+
 export default function NodeEditor() {
   const projectId = useOrchestraStore((s) => s.currentProjectId);
   const selectedNodeId = useOrchestraStore((s) => s.selectedNodeId);
@@ -215,6 +228,29 @@ export default function NodeEditor() {
               </option>
             ))}
           </select>
+          <div className="mt-3">
+            <div className="text-xs text-muted-foreground mb-1">Model</div>
+            <Input
+              list={`node-editor-model-options-${node.agent.type}`}
+              value={node.agent.model ?? ''}
+              onChange={(e) =>
+                void updateNode(node.id, {
+                  agent: { ...node.agent, model: e.target.value.trim() || undefined },
+                })
+              }
+              placeholder="Default"
+            />
+            <datalist id={`node-editor-model-options-${node.agent.type}`}>
+              {MODEL_OPTIONS[node.agent.type].map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </datalist>
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              Used when spawning the agent (interactive + one-shot). For modes/flags, open the fullscreen editor.
+            </div>
+          </div>
         </div>
 
         {/* Launch mode */}
