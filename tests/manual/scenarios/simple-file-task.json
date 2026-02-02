@@ -1,0 +1,27 @@
+{
+  "name": "Simple File Creation",
+  "description": "A basic scenario that creates a single file - useful for testing session lifecycle",
+  "node": {
+    "id": "test-node-simple",
+    "type": "agent",
+    "data": {
+      "label": "Create Test File",
+      "prompt": "Create a file called test-output.txt with the text 'Test completed successfully at' followed by the current timestamp",
+      "agent": "claude",
+      "model": "sonnet",
+      "checks": [
+        {
+          "type": "file_exists",
+          "path": "test-output.txt"
+        },
+        {
+          "type": "contains",
+          "path": "test-output.txt",
+          "text": "Test completed successfully"
+        }
+      ]
+    }
+  },
+  "expectedDuration": "30-60 seconds",
+  "notes": "This is a minimal task that should complete quickly. Good for verifying basic session functionality."
+}

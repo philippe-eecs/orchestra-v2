@@ -1,0 +1,59 @@
+{
+  "id": "test-project-001",
+  "name": "Test Project",
+  "description": "Sample project for automated and manual testing",
+  "location": "/tmp/orchestra-test",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "agent",
+      "position": { "x": 100, "y": 100 },
+      "data": {
+        "label": "Create Hello File",
+        "prompt": "Create a file called hello.txt with the contents 'Hello, Orchestra!'",
+        "agent": "claude",
+        "model": "sonnet",
+        "checks": [
+          {
+            "type": "file_exists",
+            "path": "hello.txt"
+          },
+          {
+            "type": "contains",
+            "path": "hello.txt",
+            "text": "Hello, Orchestra!"
+          }
+        ]
+      }
+    },
+    {
+      "id": "node-2",
+      "type": "agent",
+      "position": { "x": 300, "y": 100 },
+      "data": {
+        "label": "Create Config",
+        "prompt": "Create a config.json file with { \"version\": \"1.0.0\", \"enabled\": true }",
+        "agent": "claude",
+        "model": "sonnet",
+        "checks": [
+          {
+            "type": "file_exists",
+            "path": "config.json"
+          },
+          {
+            "type": "command",
+            "command": "jq '.version' config.json",
+            "expected": "\"1.0.0\""
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-1-2",
+      "source": "node-1",
+      "target": "node-2"
+    }
+  ]
+}

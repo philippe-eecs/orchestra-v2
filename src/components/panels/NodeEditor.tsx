@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useOrchestraStore } from '@/lib/store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Collapsible } from '@/components/ui/collapsible';
 import FullNodeEditor from './FullNodeEditor';
-import type { AgentType } from '@/lib/types';
+import type { AgentType, CheckResult } from '@/lib/types';
+import * as api from '@/lib/api';
 
 const AGENTS: AgentType[] = ['claude', 'codex', 'gemini'];
 
@@ -13,23 +14,109 @@ export default function NodeEditor() {
   const selectedNodeId = useOrchestraStore((s) => s.selectedNodeId);
   const updateNode = useOrchestraStore((s) => s.updateNode);
   const deleteNode = useOrchestraStore((s) => s.deleteNode);
-  const runNode = useOrchestraStore((s) => s.runNode);
-  const latestSessionIdByNodeId = useOrchestraStore((s) => s.latestSessionIdByNodeId);
-  const sessions = useOrchestraStore((s) => s.sessions);
+  const project = useOrchestraStore((s) => (projectId ? s.projects[projectId] : null));
 
   const [fullEditorOpen, setFullEditorOpen] = useState(false);
+  const [session, setSession] = useState<api.InteractiveSession | null>(null);
+  const [outputPreview, setOutputPreview] = useState<string>('');
+  const [quickInput, setQuickInput] = useState('');
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [checkResults, setCheckResults] = useState<CheckResult[]>([]);
 
   const node = useOrchestraStore((s) => {
     if (!projectId || !selectedNodeId) return null;
     return s.projects[projectId]?.nodes.find((n) => n.id === selectedNodeId) ?? null;
   });
 
-  const latestSession = useMemo(() => {
-    if (!node) return null;
-    const sessionId = latestSessionIdByNodeId[node.id];
-    if (!sessionId) return null;
-    return sessions[sessionId] ?? null;
-  }, [latestSessionIdByNodeId, node, sessions]);
+  useEffect(() => {
+    setSession(null);
+    setOutputPreview('');
+    setQuickInput('');
+    setSessionError(null);
+    setCopied(false);
+    setCheckResults([]);
+
+    if (!node) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const sessions = await api.listInteractiveSessions();
+        const existing = sessions.find((s) => s.nodeId === node.id && s.status === 'running') ?? null;
+        if (!cancelled) setSession(existing);
+      } catch (e) {
+        if (!cancelled) setSessionError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [node?.id]);
+
+  // Listen for session completion events
+  useEffect(() => {
+    if (!node) return;
+
+    const nodeId = node.id;
+    let unlistenFn: (() => void) | null = null;
+
+    void (async () => {
+      unlistenFn = await api.listenSessionCompleted((event) => {
+        if (event.nodeId !== nodeId) return;
+
+        // Agent finished - update UI
+        setOutputPreview(event.output);
+        setCheckResults(event.checkResults);
+
+        // Determine new status based on checks
+        let newStatus: 'completed' | 'failed' | 'awaiting_approval' = event.success ? 'completed' : 'failed';
+
+        // If there are human approval checks that haven't passed, mark as awaiting
+        const hasAwaitingApproval = event.checkResults.some(
+          (r) => r.checkType === 'human_approval' && !r.passed
+        );
+        if (hasAwaitingApproval && event.exitCode === 0) {
+          newStatus = 'awaiting_approval';
+        }
+
+        void updateNode(nodeId, { status: newStatus });
+
+        // Note: session may still exist (user in shell) - don't clear it
+        // Let the polling interval handle that
+      });
+    })();
+
+    return () => {
+      if (unlistenFn) unlistenFn();
+    };
+  }, [node?.id, updateNode]);
+
+  useEffect(() => {
+    if (!session || !node) return;
+
+    const nodeId = node.id;
+    let cancelled = false;
+    const interval = setInterval(() => {
+      void (async () => {
+        try {
+          const out = await api.captureSessionOutput(session.id, 40);
+          if (!cancelled) setOutputPreview(out);
+        } catch {
+          if (!cancelled) {
+            setSession(null);
+            void updateNode(nodeId, { status: 'completed' });
+          }
+        }
+      })();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [node?.id, session?.id, updateNode]);
 
   if (!node) {
     return <div className="h-full p-4 text-sm text-muted-foreground">Select a node to edit.</div>;
@@ -193,21 +280,133 @@ export default function NodeEditor() {
           </Button>
         </Collapsible>
 
+        {/* Check Results */}
+        {checkResults.length > 0 && (
+          <div className="border-b border-border px-4 py-3">
+            <div className="text-xs text-muted-foreground mb-2">Check Results</div>
+            <div className="space-y-1">
+              {checkResults.map((r) => (
+                <div key={r.id} className="flex items-center gap-2 text-xs">
+                  <span className={r.passed ? 'text-green-500' : 'text-red-500'}>
+                    {r.passed ? '✓' : '✗'}
+                  </span>
+                  <span className="text-muted-foreground">{r.checkType}</span>
+                  {r.message && <span className="text-foreground/70 truncate">- {r.message}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Output */}
         <div className="px-4 py-3">
-          <div className="text-xs text-muted-foreground mb-2">Output</div>
-          <pre className="max-h-[200px] overflow-auto rounded-md border border-border bg-background p-3 text-xs leading-relaxed">
-            {latestSession?.output ?? 'No output yet.'}
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-muted-foreground">Output</div>
+            {session ? <div className="text-[10px] text-muted-foreground">session: {session.id}</div> : null}
+          </div>
+          <pre className="mt-2 max-h-[200px] overflow-auto rounded-md border border-border bg-background p-3 text-xs leading-relaxed">
+            {outputPreview || (session ? 'Waiting for output...' : 'No session output yet.')}
           </pre>
-          {latestSession?.error ? <div className="mt-1 text-xs text-destructive">{latestSession.error}</div> : null}
+          {sessionError ? <div className="mt-2 text-xs text-destructive">{sessionError}</div> : null}
         </div>
       </div>
 
       {/* Footer */}
       <div className="border-t border-border p-4">
-        <Button className="w-full" onClick={() => void runNode(node.id)} disabled={node.status === 'running'}>
-          {node.status === 'running' ? 'Running...' : 'Run Node'}
-        </Button>
+        {session ? (
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              <Button
+                className="flex-1"
+                variant="secondary"
+                onClick={() => {
+                  void api.openInGhostty(session.id);
+                }}
+              >
+                Open in Ghostty
+              </Button>
+              <Button
+                className="flex-1"
+                variant="ghost"
+                onClick={() => {
+                  const cmd = `tmux attach -t ${session.id}`;
+                  void navigator.clipboard.writeText(cmd).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  });
+                }}
+              >
+                {copied ? '✓ Copied!' : 'Copy'}
+              </Button>
+              <Button
+                className="flex-1"
+                variant="destructive"
+                onClick={() => {
+                  void (async () => {
+                    try {
+                      await api.killInteractiveSession(session.id);
+                      setSession(null);
+                      setOutputPreview('');
+                      void updateNode(node.id, { status: 'pending' });
+                    } catch (e) {
+                      setSessionError(e instanceof Error ? e.message : String(e));
+                    }
+                  })();
+                }}
+              >
+                Kill
+              </Button>
+            </div>
+
+            <div className="flex gap-2">
+              <Input
+                value={quickInput}
+                onChange={(e) => setQuickInput(e.target.value)}
+                placeholder="Send input without attaching..."
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && quickInput) {
+                    void api.sendSessionInput(session.id, quickInput);
+                    setQuickInput('');
+                  }
+                }}
+              />
+              <Button
+                onClick={() => {
+                  if (quickInput) {
+                    void api.sendSessionInput(session.id, quickInput);
+                    setQuickInput('');
+                  }
+                }}
+              >
+                Send
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button
+            className="w-full"
+            onClick={() => {
+              void (async () => {
+                try {
+                  const newSession = await api.createInteractiveSession({
+                    nodeId: node.id,
+                    agent: node.agent.type,
+                    model: node.agent.model,
+                    prompt: node.prompt,
+                    cwd: project?.location,
+                  });
+                  setSession(newSession);
+                  setSessionError(null);
+                  void updateNode(node.id, { status: 'running' });
+                } catch (e) {
+                  setSessionError(e instanceof Error ? e.message : String(e));
+                }
+              })();
+            }}
+          >
+            Start Interactive Session
+          </Button>
+        )}
       </div>
 
       {/* Fullscreen editor modal */}

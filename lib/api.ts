@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { AgentType, Project } from './types';
+import type { AgentType, CheckResult, Project } from './types';
 
 export type ExecutionChunkEvent = {
   sessionId: string;
@@ -18,6 +18,14 @@ export type ExecutionErrorEvent = {
   sessionId: string;
   message: string;
 };
+
+export interface InteractiveSession {
+  id: string;
+  nodeId: string;
+  agent: string;
+  status: 'running' | 'completed' | 'failed';
+  createdAt: number;
+}
 
 const LS_KEY = 'orchestra.projects.v1';
 
@@ -171,4 +179,78 @@ export async function listenExecutionEvents(handlers: {
     BROWSER_BUS.removeEventListener('execution://done', doneListener);
     BROWSER_BUS.removeEventListener('execution://error', errListener);
   };
+}
+
+export async function createInteractiveSession(input: {
+  nodeId: string;
+  agent: AgentType;
+  model?: string;
+  prompt: string;
+  cwd?: string;
+}): Promise<InteractiveSession> {
+  if (isTauri()) return invoke<InteractiveSession>('create_interactive_session', { input });
+  throw new Error('Interactive sessions require Tauri');
+}
+
+export async function attachSession(sessionId: string): Promise<void> {
+  if (isTauri()) return invoke<void>('attach_session', { input: { sessionId } });
+  throw new Error('Interactive sessions require Tauri');
+}
+
+export async function sendSessionInput(sessionId: string, text: string): Promise<void> {
+  if (isTauri()) return invoke<void>('send_session_input', { input: { sessionId, input: text } });
+  throw new Error('Interactive sessions require Tauri');
+}
+
+export async function captureSessionOutput(sessionId: string, lines?: number): Promise<string> {
+  if (isTauri()) return invoke<string>('capture_session_output', { input: { sessionId, lines } });
+  throw new Error('Interactive sessions require Tauri');
+}
+
+export async function killInteractiveSession(sessionId: string): Promise<void> {
+  if (isTauri()) return invoke<void>('kill_interactive_session', { input: { sessionId } });
+  throw new Error('Interactive sessions require Tauri');
+}
+
+export async function listInteractiveSessions(): Promise<InteractiveSession[]> {
+  if (isTauri()) return invoke<InteractiveSession[]>('list_interactive_sessions');
+  return [];
+}
+
+export async function getAttachCommand(sessionId: string): Promise<string> {
+  if (isTauri()) return invoke<string>('get_attach_command', { input: { sessionId } });
+  return `tmux attach -t ${sessionId}`;
+}
+
+export async function openInGhostty(sessionId: string): Promise<void> {
+  if (isTauri()) return invoke<void>('open_in_ghostty', { input: { sessionId } });
+  throw new Error('Opening Ghostty requires Tauri');
+}
+
+// Session completion detection
+export interface SessionCompletedEvent {
+  sessionId: string;
+  nodeId: string;
+  success: boolean;
+  exitCode: number;
+  output: string;
+  checkResults: CheckResult[];
+  allChecksPassed: boolean;
+}
+
+/**
+ * Listen for session completion events.
+ * Fired when an agent finishes (NOT when the session terminates - user may still be in shell)
+ */
+export async function listenSessionCompleted(
+  handler: (event: SessionCompletedEvent) => void
+): Promise<UnlistenFn> {
+  if (isTauri()) {
+    const unlisten = await listen<SessionCompletedEvent>('session://completed', (e) => {
+      handler(e.payload);
+    });
+    return unlisten;
+  }
+  // Browser fallback: no-op
+  return () => {};
 }

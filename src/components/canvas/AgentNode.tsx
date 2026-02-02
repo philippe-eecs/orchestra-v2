@@ -1,8 +1,18 @@
 import type { Node, NodeProps } from '@xyflow/react';
 import { Handle, Position } from '@xyflow/react';
 import { useOrchestraStore } from '@/lib/store';
+import type { NodeStatus } from '@/lib/types';
 
 type AgentFlowNode = Node<{ nodeId: string }, 'agent'>;
+
+// Status configuration for visual indicators
+const STATUS_CONFIG: Record<NodeStatus, { bg: string; border: string; pulse?: boolean; label: string }> = {
+  pending: { bg: 'bg-muted-foreground', border: 'border-border', label: 'Ready' },
+  running: { bg: 'bg-blue-500', border: 'border-blue-500/50', pulse: true, label: 'Running' },
+  completed: { bg: 'bg-green-500', border: 'border-green-500/50', label: 'Done' },
+  failed: { bg: 'bg-red-500', border: 'border-red-500/50', label: 'Failed' },
+  awaiting_approval: { bg: 'bg-yellow-500', border: 'border-yellow-500/50', pulse: true, label: 'Needs Review' },
+};
 
 export default function AgentNode(props: NodeProps<AgentFlowNode>) {
   const nodeId = props.data.nodeId;
@@ -17,17 +27,11 @@ export default function AgentNode(props: NodeProps<AgentFlowNode>) {
 
   if (!node) return null;
 
-  const statusColor =
-    node.status === 'running'
-      ? 'bg-blue-500'
-      : node.status === 'completed'
-        ? 'bg-green-500'
-        : node.status === 'failed'
-          ? 'bg-red-500'
-          : 'bg-muted-foreground';
+  const statusConfig = STATUS_CONFIG[node.status] ?? STATUS_CONFIG.pending;
+  const borderClass = isSelected ? 'border-ring' : statusConfig.border;
 
   return (
-    <div className={`min-w-[220px] rounded-lg border ${isSelected ? 'border-ring' : 'border-border'} bg-card p-3`}>
+    <div className={`min-w-[220px] rounded-lg border ${borderClass} bg-card p-3 transition-colors`}>
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-muted-foreground" />
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-muted-foreground" />
 
@@ -36,7 +40,12 @@ export default function AgentNode(props: NodeProps<AgentFlowNode>) {
           <div className="truncate font-medium">{node.title}</div>
           <div className="mt-1 text-xs text-muted-foreground">{node.agent.type}</div>
         </div>
-        <div className={`mt-1 h-2 w-2 shrink-0 rounded-full ${statusColor}`} />
+        <div className="flex items-center gap-1.5">
+          <div
+            className={`h-2 w-2 shrink-0 rounded-full ${statusConfig.bg} ${statusConfig.pulse ? 'animate-pulse' : ''}`}
+            title={statusConfig.label}
+          />
+        </div>
       </div>
 
       {node.prompt ? (
