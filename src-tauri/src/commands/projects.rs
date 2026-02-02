@@ -115,4 +115,3 @@ pub async fn delete_project(state: tauri::State<'_, AppState>, id: String) -> Re
     state.projects.write().await.remove(&id);
     Ok(())
 }
-

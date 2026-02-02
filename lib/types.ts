@@ -23,7 +23,7 @@ export type Check =
   | { id: string; type: 'human_approval' }
   | { id: string; type: 'test_runner'; framework: 'npm' | 'pytest' | 'jest' | 'cargo'; autoRetry?: boolean; maxRetries?: number };
 
-export type NodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'awaiting_approval';
+export type NodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'awaiting_approval' | 'awaiting_input';
 
 export interface Node {
   id: string;
@@ -55,7 +55,7 @@ export interface Project {
   updatedAt: number;
 }
 
-export type SessionStatus = 'running' | 'completed' | 'failed' | 'awaiting_approval';
+export type SessionStatus = 'running' | 'completed' | 'failed' | 'awaiting_approval' | 'awaiting_input';
 
 export interface Session {
   id: string;

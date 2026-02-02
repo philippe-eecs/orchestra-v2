@@ -60,10 +60,11 @@ export default function NodeEditor() {
     if (!node) return;
 
     const nodeId = node.id;
-    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    let unlistenFn: (() => void) | undefined;
 
     void (async () => {
-      unlistenFn = await api.listenSessionCompleted((event) => {
+      const fn = await api.listenSessionCompleted((event) => {
         if (event.nodeId !== nodeId) return;
 
         // Agent finished - update UI
@@ -86,17 +87,19 @@ export default function NodeEditor() {
         // Note: session may still exist (user in shell) - don't clear it
         // Let the polling interval handle that
       });
+      if (cancelled) fn();
+      else unlistenFn = fn;
     })();
 
     return () => {
-      if (unlistenFn) unlistenFn();
+      cancelled = true;
+      unlistenFn?.();
     };
   }, [node?.id, updateNode]);
 
   useEffect(() => {
     if (!session || !node) return;
 
-    const nodeId = node.id;
     let cancelled = false;
     const interval = setInterval(() => {
       void (async () => {
@@ -106,7 +109,6 @@ export default function NodeEditor() {
         } catch {
           if (!cancelled) {
             setSession(null);
-            void updateNode(nodeId, { status: 'completed' });
           }
         }
       })();

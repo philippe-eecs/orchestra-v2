@@ -56,5 +56,6 @@ pub fn spawn_agent(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    cmd.spawn().map_err(|e| format!("failed to spawn `{agent}`: {e}"))
+    cmd.spawn()
+        .map_err(|e| format!("failed to spawn `{agent}`: {e}"))
 }

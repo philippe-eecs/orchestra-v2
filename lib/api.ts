@@ -254,3 +254,51 @@ export async function listenSessionCompleted(
   // Browser fallback: no-op
   return () => {};
 }
+
+// Session awaiting input detection
+export interface SessionAwaitingInputEvent {
+  sessionId: string;
+  nodeId: string;
+  nodeLabel: string;
+  detectedQuestion: string | null;
+  outputPreview: string;
+  timestamp: number;
+}
+
+/**
+ * Listen for session awaiting input events.
+ * Fired when an agent appears to be waiting for user input.
+ */
+export async function listenSessionAwaitingInput(
+  handler: (event: SessionAwaitingInputEvent) => void
+): Promise<UnlistenFn> {
+  if (isTauri()) {
+    const unlisten = await listen<SessionAwaitingInputEvent>('session://awaiting_input', (e) => {
+      handler(e.payload);
+    });
+    return unlisten;
+  }
+  // Browser fallback: no-op
+  return () => {};
+}
+
+export interface SessionAwaitingInputClearedEvent {
+  sessionId: string;
+  nodeId: string;
+  timestamp: number;
+}
+
+/**
+ * Fired when a session previously awaiting input resumes producing output.
+ */
+export async function listenSessionAwaitingInputCleared(
+  handler: (event: SessionAwaitingInputClearedEvent) => void
+): Promise<UnlistenFn> {
+  if (isTauri()) {
+    const unlisten = await listen<SessionAwaitingInputClearedEvent>('session://awaiting_input_cleared', (e) => {
+      handler(e.payload);
+    });
+    return unlisten;
+  }
+  return () => {};
+}

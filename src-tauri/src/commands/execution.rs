@@ -111,9 +111,12 @@ pub async fn execute_node(
     state: tauri::State<'_, AppState>,
     input: ExecuteNodeInput,
 ) -> Result<ExecuteNodeOutput, String> {
-    let session_id = input.session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let session_id = input
+        .session_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let mut child = executors::local::spawn_agent(&input.agent, input.model.as_deref(), &input.cwd)?;
+    let mut child =
+        executors::local::spawn_agent(&input.agent, input.model.as_deref(), &input.cwd)?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
@@ -146,8 +149,12 @@ pub async fn execute_node(
     let window_stderr = window.clone();
     let session_stdout = session_id.clone();
     let session_stderr = session_id.clone();
-    tokio::spawn(async move { pump_output(window_stdout, session_stdout, "stdout".to_string(), stdout).await });
-    tokio::spawn(async move { pump_error(window_stderr, session_stderr, "stderr".to_string(), stderr).await });
+    tokio::spawn(async move {
+        pump_output(window_stdout, session_stdout, "stdout".to_string(), stdout).await
+    });
+    tokio::spawn(async move {
+        pump_error(window_stderr, session_stderr, "stderr".to_string(), stderr).await
+    });
 
     let window_done = window.clone();
     let state_processes = state.processes.clone();

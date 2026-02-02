@@ -21,3 +21,30 @@ pub struct SessionCompletedEvent {
     /// Whether all automated checks passed
     pub all_checks_passed: bool,
 }
+
+/// Event emitted when an agent appears to be waiting for user input
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAwaitingInputEvent {
+    /// ID of the tmux session
+    pub session_id: String,
+    /// ID of the node this session was running for
+    pub node_id: String,
+    /// Label of the node (for display)
+    pub node_label: String,
+    /// Detected question text, if any
+    pub detected_question: Option<String>,
+    /// Preview of recent terminal output
+    pub output_preview: String,
+    /// Timestamp when waiting was detected
+    pub timestamp: i64,
+}
+
+/// Event emitted when an awaiting-input session resumes producing output
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAwaitingInputClearedEvent {
+    pub session_id: String,
+    pub node_id: String,
+    pub timestamp: i64,
+}

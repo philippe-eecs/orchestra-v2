@@ -1,9 +1,8 @@
 use crate::sessions::manager::{Session, SessionManager};
 use crate::sessions::tmux;
 use serde::Deserialize;
-use std::sync::Arc;
+use std::path::PathBuf;
 use tauri::State;
-use tokio::sync::Mutex;
 
 /// Validate session ID to prevent operations on arbitrary tmux sessions.
 /// Only allows orchestra-prefixed session IDs with alphanumeric/dash/underscore chars.
@@ -11,7 +10,10 @@ fn validate_session_id(session_id: &str) -> Result<(), String> {
     if !session_id.starts_with("orchestra-") {
         return Err("Invalid session ID: must start with 'orchestra-'".to_string());
     }
-    if !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if !session_id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return Err("Invalid session ID: contains invalid characters".to_string());
     }
     if session_id.len() > 128 {
@@ -24,6 +26,32 @@ fn validate_session_id(session_id: &str) -> Result<(), String> {
 /// Escapes backslashes and double quotes.
 fn escape_applescript(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn find_ghostty_binary() -> Option<PathBuf> {
+    if let Ok(path) = which::which("ghostty") {
+        return Some(path);
+    }
+
+    let candidates = [
+        "/Applications/Ghostty.app/Contents/MacOS/ghostty",
+        "/Applications/Ghostty.app/Contents/MacOS/Ghostty",
+    ];
+    for p in candidates {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let pb = PathBuf::from(home).join("Applications/Ghostty.app/Contents/MacOS/ghostty");
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+
+    None
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,11 +86,10 @@ pub struct CaptureSessionOutputInput {
 
 #[tauri::command]
 pub async fn create_interactive_session(
-    state: State<'_, Arc<Mutex<SessionManager>>>,
+    state: State<'_, SessionManager>,
     input: CreateInteractiveSessionInput,
 ) -> Result<Session, String> {
-    let manager = state.lock().await;
-    manager
+    state
         .create_session(
             &input.node_id,
             &input.agent,
@@ -85,24 +112,33 @@ pub async fn attach_session(input: SessionIdInput) -> Result<(), String> {
         // Try to invoke terminal directly for proper -e support
         let result = match terminal.as_str() {
             "Ghostty" => {
-                let ghostty_path = "/Applications/Ghostty.app/Contents/MacOS/ghostty";
-                std::process::Command::new(ghostty_path)
-                    .args(["-e", "sh", "-c", &attach_cmd])
-                    .spawn()
+                if let Some(ghostty_path) = find_ghostty_binary() {
+                    std::process::Command::new(ghostty_path)
+                        .args(["-e", "sh", "-c", &attach_cmd])
+                        .spawn()
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Ghostty not found",
+                    ))
+                }
             }
             "Terminal" => {
                 // macOS Terminal.app uses osascript for command execution
                 // Escape the command to prevent AppleScript injection
                 let escaped_cmd = escape_applescript(&attach_cmd);
                 std::process::Command::new("osascript")
-                    .args(["-e", &format!("tell app \"Terminal\" to do script \"{}\"", escaped_cmd)])
+                    .args([
+                        "-e",
+                        &format!("tell app \"Terminal\" to do script \"{}\"", escaped_cmd),
+                    ])
                     .spawn()
             }
             other => {
-                // For other terminals, try direct invocation first
-                let app_path = format!("/Applications/{}.app/Contents/MacOS/{}", other, other.to_lowercase());
-                std::process::Command::new(&app_path)
-                    .args(["-e", "sh", "-c", &attach_cmd])
+                // Best-effort: ask macOS to open the app and pass args.
+                // Not all terminals support `-e`, but we fall back to Terminal.app below.
+                std::process::Command::new("open")
+                    .args(["-a", other, "--args", "-e", "sh", "-c", &attach_cmd])
                     .spawn()
             }
         };
@@ -111,7 +147,10 @@ pub async fn attach_session(input: SessionIdInput) -> Result<(), String> {
             // Fallback to Terminal.app with escaped command
             let escaped_cmd = escape_applescript(&attach_cmd);
             std::process::Command::new("osascript")
-                .args(["-e", &format!("tell app \"Terminal\" to do script \"{}\"", escaped_cmd)])
+                .args([
+                    "-e",
+                    &format!("tell app \"Terminal\" to do script \"{}\"", escaped_cmd),
+                ])
                 .spawn()
                 .map_err(|e| format!("Failed to open terminal: {}", e))?;
         }
@@ -144,23 +183,24 @@ pub async fn send_session_input(input: SendSessionInput) -> Result<(), String> {
 #[tauri::command]
 pub async fn capture_session_output(input: CaptureSessionOutputInput) -> Result<String, String> {
     validate_session_id(&input.session_id)?;
-    tmux::capture_pane(&input.session_id, input.lines.unwrap_or(50)).map_err(|e| e.0)
+    let lines = input.lines.unwrap_or(50).clamp(1, 5000);
+    tmux::capture_pane(&input.session_id, lines).map_err(|e| e.0)
 }
 
 #[tauri::command]
 pub async fn kill_interactive_session(
-    state: State<'_, Arc<Mutex<SessionManager>>>,
+    state: State<'_, SessionManager>,
     input: SessionIdInput,
 ) -> Result<(), String> {
     validate_session_id(&input.session_id)?;
-    let manager = state.lock().await;
-    manager.kill_session(&input.session_id).await
+    state.kill_session(&input.session_id).await
 }
 
 #[tauri::command]
-pub async fn list_interactive_sessions(state: State<'_, Arc<Mutex<SessionManager>>>) -> Result<Vec<Session>, String> {
-    let manager = state.lock().await;
-    Ok(manager.list_sessions().await)
+pub async fn list_interactive_sessions(
+    state: State<'_, SessionManager>,
+) -> Result<Vec<Session>, String> {
+    Ok(state.list_sessions().await)
 }
 
 #[tauri::command]
@@ -176,8 +216,7 @@ pub fn open_in_ghostty(input: SessionIdInput) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        // Invoke Ghostty directly - `open -a` doesn't pass args correctly to terminal emulators
-        let ghostty_path = "/Applications/Ghostty.app/Contents/MacOS/ghostty";
+        let ghostty_path = find_ghostty_binary().ok_or_else(|| "Ghostty not found".to_string())?;
         std::process::Command::new(ghostty_path)
             .args(["-e", "sh", "-c", &attach_cmd])
             .spawn()

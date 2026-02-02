@@ -12,6 +12,7 @@ const STATUS_CONFIG: Record<NodeStatus, { bg: string; border: string; pulse?: bo
   completed: { bg: 'bg-green-500', border: 'border-green-500/50', label: 'Done' },
   failed: { bg: 'bg-red-500', border: 'border-red-500/50', label: 'Failed' },
   awaiting_approval: { bg: 'bg-yellow-500', border: 'border-yellow-500/50', pulse: true, label: 'Needs Review' },
+  awaiting_input: { bg: 'bg-orange-500', border: 'border-orange-500/50', pulse: true, label: 'Needs Input' },
 };
 
 export default function AgentNode(props: NodeProps<AgentFlowNode>) {

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import type { AppView, Edge, Node, Project, Session } from './types';
+import type { AppView, Edge, Node, NodeStatus, Project, Session } from './types';
 import * as api from './api';
 
 function now() {
@@ -63,6 +63,9 @@ export type OrchestraState = {
   appendSessionOutput: (sessionId: string, chunk: string) => void;
   finishSession: (sessionId: string, success: boolean, exitCode: number | null) => void;
   failSession: (sessionId: string, message: string) => void;
+  markAwaitingInput: (nodeId: string) => void;
+  markNodeStatus: (nodeId: string, status: NodeStatus) => void;
+  markInputResolved: (nodeId: string) => void;
 
   runNode: (nodeId: string) => Promise<void>;
 };
@@ -259,6 +262,50 @@ export const useOrchestraStore = create<OrchestraState>()(
         session.status = 'failed';
         session.error = message;
         session.completedAt = now();
+      });
+    },
+
+    markAwaitingInput(nodeId) {
+      set((s) => {
+        // Update session status (best-effort for non-interactive sessions)
+        const sessionId = s.latestSessionIdByNodeId[nodeId];
+        if (sessionId && s.sessions[sessionId]) s.sessions[sessionId].status = 'awaiting_input';
+
+        // Update node status across any loaded project
+        for (const project of Object.values(s.projects)) {
+          const node = project.nodes.find((n) => n.id === nodeId);
+          if (node && node.status === 'running') {
+            node.status = 'awaiting_input';
+            project.updatedAt = now();
+            break;
+          }
+        }
+      });
+    },
+
+    markNodeStatus(nodeId, status) {
+      set((s) => {
+        for (const project of Object.values(s.projects)) {
+          const node = project.nodes.find((n) => n.id === nodeId);
+          if (node) {
+            node.status = status;
+            project.updatedAt = now();
+            break;
+          }
+        }
+      });
+    },
+
+    markInputResolved(nodeId) {
+      set((s) => {
+        for (const project of Object.values(s.projects)) {
+          const node = project.nodes.find((n) => n.id === nodeId);
+          if (node && node.status === 'awaiting_input') {
+            node.status = 'running';
+            project.updatedAt = now();
+            break;
+          }
+        }
       });
     },
 

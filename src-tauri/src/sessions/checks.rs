@@ -68,7 +68,10 @@ pub struct CheckResult {
 
 /// Run all checks and return results
 pub fn run_checks(checks: &[Check], cwd: Option<&str>) -> Vec<CheckResult> {
-    checks.iter().map(|check| run_single_check(check, cwd)).collect()
+    checks
+        .iter()
+        .map(|check| run_single_check(check, cwd))
+        .collect()
 }
 
 /// Run a single check and return its result
@@ -106,7 +109,10 @@ pub fn run_single_check(check: &Check, cwd: Option<&str>) -> CheckResult {
                     } else {
                         let stderr = String::from_utf8_lossy(&output.stderr);
                         Some(if stderr.is_empty() {
-                            format!("Command exited with code {}", output.status.code().unwrap_or(-1))
+                            format!(
+                                "Command exited with code {}",
+                                output.status.code().unwrap_or(-1)
+                            )
                         } else {
                             stderr.to_string()
                         })
@@ -121,7 +127,9 @@ pub fn run_single_check(check: &Check, cwd: Option<&str>) -> CheckResult {
             }
         }
 
-        Check::Contains { id, path, pattern, .. } => {
+        Check::Contains {
+            id, path, pattern, ..
+        } => {
             let full_path = resolve_path(path, cwd);
             match std::fs::read_to_string(&full_path) {
                 Ok(content) => {
