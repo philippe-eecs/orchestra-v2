@@ -77,7 +77,7 @@ interface OrchestraState {
   ) => void;
   setSessionSandboxInfo: (
     sessionId: string,
-    info: { worktreePath: string; branchName: string; prUrl?: string }
+    info: NonNullable<Session['sandboxInfo']>
   ) => void;
 
   // ========== NODE RUN ACTIONS ==========
@@ -781,7 +781,11 @@ export const selectProjectSessions = (state: OrchestraState) => {
 
 export const selectRunningSessions = (state: OrchestraState) =>
   Object.values(state.sessions).filter(
-    (s) => s.status === 'running' || s.status === 'starting' || s.status === 'awaiting_approval'
+    (s) =>
+      s.status === 'running' ||
+      s.status === 'starting' ||
+      s.status === 'awaiting_approval' ||
+      s.status === 'awaiting_review'
   );
 
 export const selectAllSessions = (state: OrchestraState) =>

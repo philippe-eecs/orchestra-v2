@@ -120,7 +120,7 @@ export type CheckInput =
 
 // ========== NODE ==========
 
-export type NodeStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type NodeStatus = 'pending' | 'running' | 'awaiting_review' | 'completed' | 'failed';
 
 export interface Node {
   id: string;
@@ -171,6 +171,7 @@ export interface Edge {
 export type SessionStatus =
   | 'starting'
   | 'running'
+  | 'awaiting_review'
   | 'awaiting_approval'
   | 'completed'
   | 'failed';
@@ -209,7 +210,10 @@ export interface Session {
   sandboxInfo?: {
     worktreePath: string;
     branchName: string;
+    baseBranch?: string;
     prUrl?: string;
+    commitHash?: string;
+    finalizeAction?: GitFinalizeAction;
   };
 }
 
@@ -276,6 +280,19 @@ export interface NodeRun {
   // Timing
   startedAt: number;
   completedAt: number | null;
+
+  // Optional: sandbox metadata for this run (useful for history)
+  sandboxInfo?: {
+    worktreePath: string;
+    branchName: string;
+    baseBranch?: string;
+    prUrl?: string;
+    commitHash?: string;
+    finalizeAction?: GitFinalizeAction;
+  };
+
+  // Optional: post-run summary
+  summaryMarkdown?: string;
 }
 
 // ========== UI STATE ==========
@@ -460,11 +477,14 @@ export interface SandboxConfig {
   enabled: boolean;              // default: true
   type: 'git-worktree';          // future: 'docker-volume', 'copy'
   branchPrefix?: string;         // default: 'agent/'
-  createPR?: boolean;            // default: true
+  finalizeAction?: GitFinalizeAction; // default: 'pr'
   prBaseBranch?: string;         // default: 'main'
-  cleanupOnSuccess?: boolean;    // default: true
+  requireApproval?: boolean;     // default: true
+  cleanupOnFinalize?: boolean;   // default: false (keep for reference)
   keepOnFailure?: boolean;       // default: true (for debugging)
 }
+
+export type GitFinalizeAction = 'none' | 'commit' | 'push' | 'pr';
 
 export interface ExecutionConfig {
   backend: ExecutionBackend;
@@ -502,4 +522,5 @@ export interface ExecuteRequest {
   projectPath?: string;
   projectId?: string;
   nodeId?: string;
+  runId?: string;
 }

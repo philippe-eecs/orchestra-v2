@@ -10,6 +10,7 @@ export interface ExecuteRequest {
   projectPath?: string;
   projectId?: string;
   nodeId?: string;
+  runId?: string;
 }
 
 export interface ExecuteResponse {

@@ -67,7 +67,7 @@ Node {
   deliverables: Deliverable[] // What the node must produce
   checks: Check[]             // How we verify success
 
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'awaiting_review' | 'completed' | 'failed'
   sessionId: string | null    // Reference to running/completed session
 }
 ```
@@ -139,7 +139,7 @@ Session {
   agentType: 'claude' | 'codex' | 'gemini'
   agentPid: number | null
 
-  status: 'starting' | 'running' | 'awaiting_approval' | 'completed' | 'failed'
+  status: 'starting' | 'running' | 'awaiting_review' | 'awaiting_approval' | 'completed' | 'failed'
 
   deliverablesStatus: Record<string, 'pending' | 'produced'>
   checkResults: Record<string, 'pending' | 'passed' | 'failed'>

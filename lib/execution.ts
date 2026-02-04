@@ -8,9 +8,10 @@ import type {
   AgentConfig,
   ComposedAgentTemplate,
   ExecutionConfig,
+  GitFinalizeAction,
 } from './types';
 import { useOrchestraStore } from './store';
-import { executeAgent, isInteractiveBackend } from './api';
+import { executeAgent, getSessionStatus, isInteractiveBackend } from './api';
 
 /**
  * Resolve the execution config for a node, considering project defaults.
@@ -496,6 +497,7 @@ export function getReadyNodesProject(project: Project, completedNodeIds: Set<str
     if (
       completedNodeIds.has(node.id) ||
       node.status === 'running' ||
+      node.status === 'awaiting_review' ||
       node.status === 'completed' ||
       node.status === 'failed'
     ) {
@@ -800,7 +802,15 @@ export async function executeNodeNew(
       error?: string;
       sessionId?: string;
       attachCommand?: string;
-      sandboxInfo?: { worktreePath: string; branchName: string; prUrl?: string };
+      backend?: string;
+      sandboxInfo?: {
+        worktreePath: string;
+        branchName: string;
+        baseBranch?: string;
+        prUrl?: string;
+        commitHash?: string;
+        finalizeAction?: GitFinalizeAction;
+      };
     };
 
     if (node.agent.type === 'composed') {
@@ -846,6 +856,7 @@ export async function executeNodeNew(
         projectPath: project.location,
         projectId: project.id,
         nodeId: node.id,
+        runId,
       });
 
       // Store attach info if interactive backend
@@ -860,6 +871,38 @@ export async function executeNodeNew(
       // Store sandbox info if returned from API
       if (result.sandboxInfo) {
         store.setSessionSandboxInfo(sessionId, result.sandboxInfo);
+        store.updateNodeRun(runId, { sandboxInfo: result.sandboxInfo });
+      }
+
+      // If interactive, poll until it stops and capture final output.
+      if (isInteractiveBackend(executionConfig.backend) && result.status === 'running' && result.sessionId) {
+        const containerId = result.sessionId;
+	        let lastOutput = '';
+
+	        // Poll until stopped; keep output fresh in the NodeRun for viewing.
+	        // Note: getSessionStatus returns full captured output; we overwrite instead of appending.
+	        while (true) {
+	          const status = await getSessionStatus(containerId, executionConfig.backend);
+	          if (status.output) {
+	            lastOutput = status.output;
+            store.updateNodeRun(runId, { output: lastOutput });
+          }
+
+          if (status.status === 'stopped') {
+            break;
+          }
+          if (status.status === 'error') {
+            throw new Error(status.error || 'Interactive session error');
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+
+        result = {
+          ...result,
+          status: 'done',
+          output: lastOutput,
+        };
       }
     }
 
@@ -876,11 +919,17 @@ export async function executeNodeNew(
     }
 
     // Run checks (pass the output for LLM critic checks)
-    const checkResults = await runAllChecks(node, sessionId, project.location, result.output);
+    const effectiveProjectLocation = result.sandboxInfo?.worktreePath || project.location;
+    const checkResults = await runAllChecks(node, sessionId, effectiveProjectLocation, result.output);
 
     if (checkResults.needsHumanApproval) {
-      store.setSessionStatus(sessionId, 'awaiting_approval');
-      store.setNodeStatus(project.id, node.id, 'running'); // Keep as running until approved
+      const requireReview = Boolean(
+        executionConfig.sandbox?.enabled &&
+          result.sandboxInfo?.worktreePath &&
+          (executionConfig.sandbox?.requireApproval ?? true)
+      );
+      store.setSessionStatus(sessionId, requireReview ? 'awaiting_review' : 'awaiting_approval');
+      store.setNodeStatus(project.id, node.id, requireReview ? 'awaiting_review' : 'running');
       return;
     }
 
@@ -891,8 +940,18 @@ export async function executeNodeNew(
     }
 
     if (checkResults.allPassed) {
-      store.setSessionStatus(sessionId, 'completed');
-      store.setNodeStatus(project.id, node.id, 'completed');
+      const requireReview = Boolean(
+        executionConfig.sandbox?.enabled &&
+          result.sandboxInfo?.worktreePath &&
+          (executionConfig.sandbox?.requireApproval ?? true)
+      );
+      if (requireReview) {
+        store.setSessionStatus(sessionId, 'awaiting_review');
+        store.setNodeStatus(project.id, node.id, 'awaiting_review');
+      } else {
+        store.setSessionStatus(sessionId, 'completed');
+        store.setNodeStatus(project.id, node.id, 'completed');
+      }
     } else {
       // If there are failed checks with auto-retry, we could re-run
       // For now, just mark as failed
@@ -941,6 +1000,161 @@ export function approveHumanCheck(sessionId: string, checkId: string): void {
       getState().setNodeStatus(projectId, session.nodeId, 'completed');
     }
   }
+}
+
+/**
+ * Finalize a sandboxed run (commit/push/PR) and optionally cleanup the worktree.
+ * Intended to be called from the UI when a node is awaiting review.
+ */
+export async function finalizeSandboxSession(sessionId: string): Promise<void> {
+  const store = useOrchestraStore.getState();
+  const session = store.sessions[sessionId];
+  if (!session?.sandboxInfo) {
+    throw new Error('No sandbox info available for this session');
+  }
+
+  const projectId = Object.keys(store.projects).find((pid) =>
+    store.projects[pid].nodes.some((n) => n.id === session.nodeId)
+  );
+  if (!projectId) throw new Error('Project not found for session');
+
+  const project = store.projects[projectId];
+  const node = project.nodes.find((n) => n.id === session.nodeId);
+  if (!node) throw new Error('Node not found for session');
+
+  const executionConfig = resolveExecutionConfig(node, project);
+  const sandbox = executionConfig.sandbox;
+  if (!sandbox?.enabled) {
+    throw new Error('Sandbox is not enabled for this node');
+  }
+
+  const finalizeAction = sandbox.finalizeAction || 'pr';
+  const baseBranch = session.sandboxInfo.baseBranch || sandbox.prBaseBranch || 'main';
+
+  // Mark any human approval checks as passed as part of review approval.
+  for (const check of node.checks) {
+    if (check.type === 'human_approval') {
+      store.setCheckResult(sessionId, check.id, 'passed');
+    }
+  }
+
+  const finalizeResponse = await fetch('/api/sandbox/finalize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      worktreePath: session.sandboxInfo.worktreePath,
+      branchName: session.sandboxInfo.branchName,
+      baseBranch,
+      finalizeAction,
+    }),
+  });
+
+  if (!finalizeResponse.ok) {
+    const text = await finalizeResponse.text();
+    throw new Error(text || 'Failed to finalize sandbox');
+  }
+
+  const finalizeResult = (await finalizeResponse.json()) as {
+    hasChanges: boolean;
+    commitHash?: string;
+    prUrl?: string;
+    finalizeAction?: string;
+  };
+
+  store.setSessionSandboxInfo(sessionId, {
+    ...session.sandboxInfo,
+    baseBranch,
+    commitHash: finalizeResult.commitHash,
+    prUrl: finalizeResult.prUrl,
+    finalizeAction,
+  });
+
+  // Optionally cleanup the sandbox worktree after finalize.
+  // If finalizeAction is 'none', keep the worktree so changes are not lost.
+  if (finalizeAction !== 'none' && sandbox.cleanupOnFinalize !== false && project.location) {
+    await fetch('/api/sandbox/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repoPath: project.location,
+        worktreePath: session.sandboxInfo.worktreePath,
+        branchName: session.sandboxInfo.branchName,
+      }),
+    }).catch(() => {
+      // Best-effort cleanup
+    });
+  }
+
+  store.setSessionStatus(sessionId, 'completed');
+  store.setNodeStatus(projectId, session.nodeId, 'completed');
+}
+
+/**
+ * Generate a Markdown summary of the latest run for the session's node.
+ * This runs a lightweight LLM pass (best-effort) and stores it on the NodeRun.
+ */
+export async function generateSessionSummary(sessionId: string): Promise<void> {
+  const store = useOrchestraStore.getState();
+  const session = store.sessions[sessionId];
+  if (!session) throw new Error('Session not found');
+
+  // Find the latest run for this node
+  const latestRun = Object.values(store.nodeRuns)
+    .filter((r) => r.nodeId === session.nodeId)
+    .sort((a, b) => b.startedAt - a.startedAt)[0];
+
+  if (!latestRun?.output) {
+    throw new Error('No output available to summarize');
+  }
+
+  const projectId = Object.keys(store.projects).find((pid) =>
+    store.projects[pid].nodes.some((n) => n.id === session.nodeId)
+  );
+  const project = projectId ? store.projects[projectId] : null;
+  const node = project ? project.nodes.find((n) => n.id === session.nodeId) : null;
+
+  const output = latestRun.output;
+  const maxOutputChars = 60_000;
+  const clippedOutput = output.length > maxOutputChars ? output.slice(0, maxOutputChars) + '\n\n[TRUNCATED]' : output;
+
+  const diffHint = session.sandboxInfo?.worktreePath
+    ? `This run happened in a git worktree at: ${session.sandboxInfo.worktreePath}\nBranch: ${session.sandboxInfo.branchName}\n`
+    : '';
+
+  const prompt = `You are summarizing what an AI agent just did in a development orchestration tool.
+
+Return **Markdown** only.
+
+## Context
+Project: ${project?.name || 'Unknown'}
+Node: ${node?.title || session.nodeId}
+${diffHint}
+
+## Node prompt (compiled)
+${latestRun.prompt}
+
+## Agent output
+${clippedOutput}
+
+## What to produce
+Write a concise summary with these sections:
+- What happened
+- Files / deliverables (if any)
+- How to verify (commands)
+- Risks / follow-ups
+`;
+
+  const res = await executeAgent({
+    executor: 'claude',
+    prompt,
+    options: { model: 'haiku' },
+  });
+
+  if (res.status === 'error') {
+    throw new Error(res.error || 'Summary generation failed');
+  }
+
+  store.updateNodeRun(latestRun.id, { summaryMarkdown: res.output || '' });
 }
 
 /**
@@ -1037,7 +1251,17 @@ export async function runProject(projectId: string): Promise<void> {
           break;
         }
 
-        // Check for awaiting approval
+        // If any node is awaiting review, pause the DAG run and return control to the user.
+        const awaitingReview = currentProject.nodes.some((n) => {
+          if (!n.sessionId) return false;
+          const session = getState().sessions[n.sessionId];
+          return session?.status === 'awaiting_review';
+        });
+        if (awaitingReview) {
+          break;
+        }
+
+        // Check for awaiting approval (legacy check gate)
         const awaitingApproval = currentProject.nodes.some((n) => {
           if (!n.sessionId) return false;
           const session = getState().sessions[n.sessionId];

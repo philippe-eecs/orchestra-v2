@@ -4,6 +4,7 @@ import { useCallback, useState, useMemo } from 'react';
 import {
   Trash2,
   Plus,
+  Play,
   X,
   FileText,
   Link,
@@ -45,10 +46,12 @@ import {
 } from '@/lib/store';
 import { FullNodeEditor } from './full-node-editor';
 import { PromptEditorModal } from './prompt-editor-modal';
-import { buildPromptPreview } from '@/lib/execution';
+import { FileEditorModal } from './file-editor-modal';
+import { buildPromptPreview, executeNodeNew, finalizeSandboxSession, generateSessionSummary } from '@/lib/execution';
 import type { AgentTemplate } from '@/lib/types';
 import type {
   ContextRef,
+  Deliverable,
   DeliverableInput,
   Check,
   CheckInput,
@@ -57,6 +60,7 @@ import type {
   Project,
   ExecutionBackend,
   ExecutionConfig,
+  GitFinalizeAction,
 } from '@/lib/types';
 import { AGENT_PRESETS } from '@/lib/types';
 import { getBackendCapabilities } from '@/lib/api';
@@ -94,6 +98,8 @@ const contextTypeOptions = [
   { value: 'parent_output', label: 'Parent Output', icon: GitBranch },
   { value: 'markdown', label: 'Markdown', icon: FileText },
 ];
+
+type RunTarget = 'local' | 'worktree' | 'cloud';
 
 // ========== Helper Functions ==========
 
@@ -188,6 +194,8 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
   const addNodeCheck = useOrchestraStore((state) => state.addNodeCheck);
   const removeNodeCheck = useOrchestraStore((state) => state.removeNodeCheck);
   const agentLibrary = useOrchestraStore((state) => state.agentLibrary);
+  const sessions = useOrchestraStore((state) => state.sessions);
+  const nodeRuns = useOrchestraStore((state) => state.nodeRuns);
 
   const composedAgents = useMemo(
     () => Object.values(agentLibrary).filter((a): a is AgentTemplate & { kind: 'composed' } => a.kind === 'composed'),
@@ -217,6 +225,39 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
 
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
 
+  const session = node.sessionId ? sessions[node.sessionId] : null;
+  const latestRun = useMemo(() => {
+    return Object.values(nodeRuns)
+      .filter((r) => r.nodeId === node.id)
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
+  }, [node.id, nodeRuns]);
+
+  const fileDeliverables = useMemo(() => {
+    return node.deliverables.filter((d): d is Extract<Deliverable, { type: 'file' }> => d.type === 'file');
+  }, [node.deliverables]);
+
+  const effectiveProjectLocation =
+    session?.sandboxInfo?.worktreePath || project.location || '';
+
+  // Review state
+  const [diffData, setDiffData] = useState<{
+    changedFiles: string[];
+    diffStat: string;
+    diffPatch: string;
+    diffPatchTruncated?: boolean;
+  } | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+
+  const [fileEditorOpen, setFileEditorOpen] = useState(false);
+  const [fileEditorPath, setFileEditorPath] = useState<string | null>(null);
+
+  const isAwaitingReview =
+    node.status === 'awaiting_review' || session?.status === 'awaiting_review';
+
   // Execution backend state
   const [executionBackend, setExecutionBackend] = useState<ExecutionBackend>(
     node.executionConfig?.backend || project.defaultExecutionConfig?.backend || 'local'
@@ -238,9 +279,24 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
   const [sandboxEnabled, setSandboxEnabled] = useState(
     node.executionConfig?.sandbox?.enabled ?? false
   );
-  const [sandboxCreatePR, setSandboxCreatePR] = useState(
-    node.executionConfig?.sandbox?.createPR ?? true
+  const [sandboxFinalizeAction, setSandboxFinalizeAction] = useState<GitFinalizeAction>(
+    node.executionConfig?.sandbox?.finalizeAction ?? 'pr'
   );
+  const [sandboxPrBaseBranch, setSandboxPrBaseBranch] = useState(
+    node.executionConfig?.sandbox?.prBaseBranch ?? 'main'
+  );
+  const [sandboxRequireApproval, setSandboxRequireApproval] = useState(
+    node.executionConfig?.sandbox?.requireApproval ?? true
+  );
+  const [sandboxCleanupOnFinalize, setSandboxCleanupOnFinalize] = useState(
+    node.executionConfig?.sandbox?.cleanupOnFinalize ?? false
+  );
+
+  const runTarget = useMemo<RunTarget>(() => {
+    if (!sandboxEnabled) return 'local';
+    if (executionBackend === 'docker-interactive') return 'cloud';
+    return 'worktree';
+  }, [executionBackend, sandboxEnabled]);
 
   // Form states
   const [newContextType, setNewContextType] = useState<ContextRef['type']>('file');
@@ -306,14 +362,28 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
       config.sandbox = {
         enabled: true,
         type: 'git-worktree',
-        createPR: sandboxCreatePR,
-        cleanupOnSuccess: true,
+        finalizeAction: sandboxFinalizeAction,
+        prBaseBranch: sandboxPrBaseBranch || undefined,
+        requireApproval: sandboxRequireApproval,
+        cleanupOnFinalize: sandboxCleanupOnFinalize,
         keepOnFailure: true,
       };
     }
 
     return config;
-  }, [executionBackend, dockerImage, remoteHost, remoteUser, modalGpu, node.executionConfig, sandboxEnabled, sandboxCreatePR]);
+  }, [
+    executionBackend,
+    dockerImage,
+    remoteHost,
+    remoteUser,
+    modalGpu,
+    node.executionConfig,
+    sandboxEnabled,
+    sandboxFinalizeAction,
+    sandboxPrBaseBranch,
+    sandboxRequireApproval,
+    sandboxCleanupOnFinalize,
+  ]);
 
   const handleSave = useCallback(() => {
     updateNode(project.id, node.id, {
@@ -332,6 +402,15 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
   const handleDelete = useCallback(() => {
     deleteNode(project.id, node.id);
   }, [project.id, node.id, deleteNode]);
+
+  const handleRunNode = useCallback(async () => {
+    const state = useOrchestraStore.getState();
+    const updatedProject = state.projects[project.id];
+    const updatedNode = updatedProject?.nodes.find((n) => n.id === node.id);
+    if (!updatedProject || !updatedNode) return;
+
+    await executeNodeNew(updatedNode, updatedProject);
+  }, [node.id, project.id]);
 
   const handlePresetChange = (presetId: string) => {
     setSelectedPreset(presetId);
@@ -354,6 +433,61 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
     }
     updateNode(project.id, node.id, { executionConfig: config });
   };
+
+  const applyRunTarget = useCallback((target: RunTarget) => {
+    if (target === 'local') {
+      setSandboxEnabled(false);
+      setExecutionBackend('local');
+      updateNode(project.id, node.id, { executionConfig: { backend: 'local' } });
+      return;
+    }
+
+    if (target === 'cloud') {
+      setSandboxEnabled(true);
+      setExecutionBackend('docker-interactive');
+      const config: ExecutionConfig = {
+        backend: 'docker-interactive',
+        docker: { image: dockerImage || undefined },
+        sandbox: {
+          enabled: true,
+          type: 'git-worktree',
+          finalizeAction: sandboxFinalizeAction,
+          prBaseBranch: sandboxPrBaseBranch || undefined,
+          requireApproval: sandboxRequireApproval,
+          cleanupOnFinalize: sandboxCleanupOnFinalize,
+          keepOnFailure: true,
+        },
+      };
+      updateNode(project.id, node.id, { executionConfig: config });
+      return;
+    }
+
+    // worktree
+    setSandboxEnabled(true);
+    setExecutionBackend('local');
+    const config: ExecutionConfig = {
+      backend: 'local',
+      sandbox: {
+        enabled: true,
+        type: 'git-worktree',
+        finalizeAction: sandboxFinalizeAction,
+        prBaseBranch: sandboxPrBaseBranch || undefined,
+        requireApproval: sandboxRequireApproval,
+        cleanupOnFinalize: sandboxCleanupOnFinalize,
+        keepOnFailure: true,
+      },
+    };
+    updateNode(project.id, node.id, { executionConfig: config });
+  }, [
+    dockerImage,
+    node.id,
+    project.id,
+    sandboxCleanupOnFinalize,
+    sandboxFinalizeAction,
+    sandboxPrBaseBranch,
+    sandboxRequireApproval,
+    updateNode,
+  ]);
 
   const handleAddContext = useCallback(() => {
     if (!newContextValue) return;
@@ -428,6 +562,112 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
     setNewCheckAutoRetry(false);
   }, [project.id, node.id, newCheckType, newCheckValue, newCheckAutoRetry, addNodeCheck]);
 
+  const handleLoadDiff = useCallback(async () => {
+    if (!session?.sandboxInfo?.worktreePath) return;
+
+    setDiffLoading(true);
+    setDiffError(null);
+    try {
+      const res = await fetch('/api/sandbox/diff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ worktreePath: session.sandboxInfo.worktreePath }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setDiffData({
+        changedFiles: data.changedFiles || [],
+        diffStat: data.diffStat || '',
+        diffPatch: data.diffPatch || '',
+        diffPatchTruncated: data.diffPatchTruncated,
+      });
+    } catch (e) {
+      setDiffError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDiffLoading(false);
+    }
+  }, [session?.sandboxInfo?.worktreePath]);
+
+  const handleFinalize = useCallback(async () => {
+    if (!session) return;
+    setDiffError(null);
+    try {
+      await finalizeSandboxSession(session.id);
+    } catch (e) {
+      setDiffError(e instanceof Error ? e.message : String(e));
+    }
+  }, [session]);
+
+  const handleGenerateSummary = useCallback(async () => {
+    if (!session) return;
+    setSummaryLoading(true);
+    setSummaryError(null);
+    try {
+      await generateSessionSummary(session.id);
+    } catch (e) {
+      setSummaryError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, [session]);
+
+  const handleSaveSummaryToWorktree = useCallback(async () => {
+    if (!session?.sandboxInfo?.worktreePath) return;
+    if (!latestRun?.summaryMarkdown) return;
+
+    const summaryPath = `.orchestra/runs/${latestRun.id}/summary.md`;
+
+    const res = await fetch('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectLocation: session.sandboxInfo.worktreePath,
+        path: summaryPath,
+        content: latestRun.summaryMarkdown,
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+
+    // Add as an explicit deliverable if not present
+    const hasDeliverable = fileDeliverables.some((d) => d.path === summaryPath);
+    if (!hasDeliverable) {
+      addNodeDeliverable(project.id, node.id, { type: 'file', path: summaryPath });
+    }
+  }, [
+    addNodeDeliverable,
+    fileDeliverables,
+    latestRun?.id,
+    latestRun?.summaryMarkdown,
+    project.id,
+    session?.sandboxInfo?.worktreePath,
+    node.id,
+  ]);
+
+  const handleEditDeliverable = useCallback((path: string) => {
+    if (!effectiveProjectLocation) return;
+    setFileEditorPath(path);
+    setFileEditorOpen(true);
+  }, [effectiveProjectLocation]);
+
+  const handleRedoWithAmendments = useCallback(async () => {
+    const amendments = window.prompt('Redo with amendments (what should change?)');
+    if (amendments === null) return;
+
+    const nextPrompt =
+      prompt +
+      `\n\n---\n\n# Amendments (from review)\n${amendments}\n`;
+
+    updateNode(project.id, node.id, { prompt: nextPrompt });
+    setPrompt(nextPrompt);
+
+    const state = useOrchestraStore.getState();
+    const updatedProject = state.projects[project.id];
+    const updatedNode = updatedProject?.nodes.find((n) => n.id === node.id);
+    if (!updatedProject || !updatedNode) return;
+
+    await executeNodeNew(updatedNode, updatedProject);
+  }, [node.id, project.id, prompt, updateNode]);
+
   // Prompt preview
   const draftNode = useMemo(() => {
     return {
@@ -454,6 +694,15 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
             variant="ghost"
             size="icon"
             className="h-7 w-7"
+            onClick={handleRunNode}
+            title="Run this node"
+          >
+            <Play className="w-4 h-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
             onClick={onToggleFullscreen}
             title={fullscreen ? 'Exit fullscreen' : 'Fullscreen inspector'}
           >
@@ -476,6 +725,191 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
 
       <ScrollArea className="flex-1">
         <div className="p-4 space-y-5">
+          {isAwaitingReview && (
+            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Eye className="w-4 h-4 text-yellow-400" />
+                  <div className="text-sm font-medium">Review & Finalize</div>
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                  >
+                    awaiting review
+                  </Badge>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={handleLoadDiff}
+                    disabled={!session?.sandboxInfo?.worktreePath || diffLoading}
+                  >
+                    {diffLoading ? 'Loading…' : 'Load Diff'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={handleGenerateSummary}
+                    disabled={!latestRun?.output || summaryLoading}
+                  >
+                    {summaryLoading ? 'Summarizing…' : 'Generate Summary'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={handleFinalize}
+                    disabled={!session?.sandboxInfo?.worktreePath}
+                  >
+                    Approve & Finalize
+                  </Button>
+                </div>
+              </div>
+
+	              {session?.sandboxInfo && (
+	                <div className="text-xs text-muted-foreground space-y-1">
+	                  <div>
+	                    <span className="font-medium text-foreground/80">Branch:</span>{' '}
+	                    {session.sandboxInfo.branchName}
+	                  </div>
+	                  {session.sandboxInfo.baseBranch && (
+	                    <div>
+	                      <span className="font-medium text-foreground/80">Base:</span>{' '}
+	                      {session.sandboxInfo.baseBranch}
+	                    </div>
+	                  )}
+	                  <div className="break-all">
+	                    <span className="font-medium text-foreground/80">Worktree:</span>{' '}
+	                    {session.sandboxInfo.worktreePath}
+	                  </div>
+                  {(session.sandboxInfo.prUrl || session.sandboxInfo.commitHash) && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {session.sandboxInfo.commitHash && (
+                        <Badge variant="outline" className="text-[10px] h-5">
+                          {session.sandboxInfo.commitHash.slice(0, 10)}
+                        </Badge>
+                      )}
+                      {session.sandboxInfo.prUrl && (
+                        <a
+                          href={session.sandboxInfo.prUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-500 hover:underline"
+                        >
+                          View PR
+                        </a>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {diffError && (
+                <div className="text-xs text-destructive whitespace-pre-wrap">{diffError}</div>
+              )}
+              {summaryError && (
+                <div className="text-xs text-destructive whitespace-pre-wrap">{summaryError}</div>
+              )}
+
+              {latestRun?.summaryMarkdown && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                      Summary
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 text-[10px]"
+                      onClick={handleSaveSummaryToWorktree}
+                      disabled={!session?.sandboxInfo?.worktreePath}
+                    >
+                      Save to worktree
+                    </Button>
+                  </div>
+                  <pre className="text-xs font-mono whitespace-pre-wrap bg-background p-2 rounded border max-h-64 overflow-auto">
+                    {latestRun.summaryMarkdown}
+                  </pre>
+                </div>
+              )}
+
+              {diffData && (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    Diff
+                  </div>
+                  {diffData.diffStat && (
+                    <pre className="text-xs font-mono whitespace-pre-wrap bg-background p-2 rounded border max-h-28 overflow-auto">
+                      {diffData.diffStat}
+                    </pre>
+                  )}
+                  <pre className="text-[10px] font-mono whitespace-pre-wrap bg-background p-2 rounded border max-h-64 overflow-auto">
+                    {diffData.diffPatch || '(no diff)'}
+                    {diffData.diffPatchTruncated ? '\n\n[DIFF TRUNCATED]' : ''}
+                  </pre>
+                </div>
+              )}
+
+              {fileDeliverables.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    Deliverables
+                  </div>
+                  <div className="space-y-1">
+                    {fileDeliverables.map((d) => (
+                        <div key={d.id} className="flex items-center justify-between gap-2">
+                          <div className="text-xs font-mono truncate">{d.path}</div>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs"
+                              onClick={async () => {
+                                await fetch('/api/context/open', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    path: d.path,
+                                    projectLocation: effectiveProjectLocation,
+                                  }),
+                                });
+                              }}
+                              disabled={!effectiveProjectLocation}
+                            >
+                              Open
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs"
+                              onClick={() => handleEditDeliverable(d.path)}
+                              disabled={!effectiveProjectLocation}
+                            >
+                              Edit
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="pt-1 flex items-center justify-end">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={handleRedoWithAmendments}
+                >
+                  Redo with amendments
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Title & Description */}
           <div className="space-y-3">
             <div className="space-y-1.5">
@@ -559,6 +993,42 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
                 )}
               </SelectContent>
             </Select>
+          </div>
+
+          <Separator />
+
+          {/* Run Target */}
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">Run Target</label>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant={runTarget === 'local' ? 'default' : 'outline'}
+                className="h-8 text-xs"
+                onClick={() => applyRunTarget('local')}
+              >
+                Local
+              </Button>
+              <Button
+                size="sm"
+                variant={runTarget === 'worktree' ? 'default' : 'outline'}
+                className="h-8 text-xs"
+                onClick={() => applyRunTarget('worktree')}
+              >
+                Worktree
+              </Button>
+              <Button
+                size="sm"
+                variant={runTarget === 'cloud' ? 'default' : 'outline'}
+                className="h-8 text-xs"
+                onClick={() => applyRunTarget('cloud')}
+              >
+                Cloud
+              </Button>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Local runs in-place. Worktree runs in an isolated git worktree. Cloud runs in Docker + tmux.
+            </div>
           </div>
 
           <Separator />
@@ -1027,21 +1497,70 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
                   />
                 </div>
                 <p className="text-[10px] text-muted-foreground">
-                  Agent works on isolated branch, creates PR when done
+                  Agent works in an isolated git worktree; finalize after review
                 </p>
 
                 {sandboxEnabled && (
-                  <div className="flex items-center justify-between">
-                    <label className="text-[10px] text-muted-foreground">Auto-create PR</label>
-                    <input
-                      type="checkbox"
-                      checked={sandboxCreatePR}
-                      onChange={(e) => {
-                        setSandboxCreatePR(e.target.checked);
-                        handleBlur();
-                      }}
-                      className="rounded"
-                    />
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-medium text-muted-foreground">Finalize Action</label>
+                      <Select
+                        value={sandboxFinalizeAction}
+                        onValueChange={(v) => {
+                          setSandboxFinalizeAction(v as GitFinalizeAction);
+                          handleBlur();
+                        }}
+                      >
+                        <SelectTrigger className="h-7 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="pr">PR</SelectItem>
+                          <SelectItem value="push">Push</SelectItem>
+                          <SelectItem value="commit">Commit</SelectItem>
+                          <SelectItem value="none">None</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {sandboxFinalizeAction === 'pr' && (
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-medium text-muted-foreground">PR Base Branch</label>
+                        <Input
+                          value={sandboxPrBaseBranch}
+                          onChange={(e) => setSandboxPrBaseBranch(e.target.value)}
+                          onBlur={handleBlur}
+                          placeholder="main"
+                          className="h-7 text-xs"
+                        />
+                      </div>
+                    )}
+
+                    <label className="flex items-center justify-between text-[10px] text-muted-foreground">
+                      <span>Require review before finalize</span>
+                      <input
+                        type="checkbox"
+                        checked={sandboxRequireApproval}
+                        onChange={(e) => {
+                          setSandboxRequireApproval(e.target.checked);
+                          handleBlur();
+                        }}
+                        className="rounded"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between text-[10px] text-muted-foreground">
+                      <span>Cleanup worktree after finalize</span>
+                      <input
+                        type="checkbox"
+                        checked={sandboxCleanupOnFinalize}
+                        onChange={(e) => {
+                          setSandboxCleanupOnFinalize(e.target.checked);
+                          handleBlur();
+                        }}
+                        className="rounded"
+                      />
+                    </label>
                   </div>
                 )}
               </div>
@@ -1058,9 +1577,16 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
                   variant={
                     node.status === 'running'
                       ? 'default'
+                      : node.status === 'awaiting_review'
+                      ? 'outline'
                       : node.status === 'completed'
                       ? 'secondary'
                       : 'destructive'
+                  }
+                  className={
+                    node.status === 'awaiting_review'
+                      ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                      : undefined
                   }
                 >
                   {node.status}
@@ -1089,6 +1615,18 @@ function NodeEditor({ node, project, fullscreen, onToggleFullscreen }: NodeEdito
           updateNode(project.id, node.id, { prompt: nextPrompt });
         }}
       />
+
+      {fileEditorPath && effectiveProjectLocation && (
+        <FileEditorModal
+          open={fileEditorOpen}
+          onOpenChange={(open) => {
+            setFileEditorOpen(open);
+            if (!open) setFileEditorPath(null);
+          }}
+          projectLocation={effectiveProjectLocation}
+          path={fileEditorPath}
+        />
+      )}
     </div>
   );
 }

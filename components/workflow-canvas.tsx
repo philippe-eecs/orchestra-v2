@@ -32,7 +32,7 @@ import {
 import CustomNode from './custom-node';
 import { CreateComposedAgentDialog } from './create-composed-agent-dialog';
 import { autoLayoutDag } from '@/lib/dag-layout';
-import type { AgentConfig } from '@/lib/types';
+import type { AgentConfig, ExecutionConfig } from '@/lib/types';
 
 const nodeTypes: NodeTypes = {
   custom: CustomNode,
@@ -87,6 +87,19 @@ const edgeTypes: EdgeTypes = {
 };
 
 const defaultAgent: AgentConfig = { type: 'claude' };
+function getDefaultExecutionConfig(): ExecutionConfig {
+  return {
+    backend: 'local',
+    sandbox: {
+      enabled: true,
+      type: 'git-worktree',
+      finalizeAction: 'pr',
+      requireApproval: true,
+      cleanupOnFinalize: false,
+      keepOnFailure: true,
+    },
+  };
+}
 
 // ========== Project Canvas Component ==========
 
@@ -240,6 +253,7 @@ export default function ProjectCanvas() {
       context: [],
       deliverables: [],
       checks: [],
+      executionConfig: getDefaultExecutionConfig(),
     });
 
     selectNode(nodeId);
@@ -278,6 +292,7 @@ export default function ProjectCanvas() {
         context: [],
         deliverables: [],
         checks: [],
+        executionConfig: getDefaultExecutionConfig(),
       });
 
       selectNode(nodeId);

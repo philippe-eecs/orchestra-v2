@@ -44,6 +44,22 @@ npm run dev
 
 ---
 
+## Worktree Sandbox (Recommended)
+
+When **Sandbox Mode** is enabled for a node, Orchestra will:
+
+1. Create a **git worktree** + **new branch** for that node run
+2. Run the agent inside the isolated worktree (safe-by-default for code edits)
+3. Pause the node in **“awaiting review”** so you can:
+   - View the **git diff**
+   - Generate a **Markdown summary** of what the agent did
+   - **Approve & Finalize** with a per-node action: `PR` / `Push` / `Commit` / `None`
+4. Optionally cleanup the worktree after finalization (configurable)
+
+This makes code-changing nodes behave more like a “review queue” instead of auto-writing to your main working tree.
+
+---
+
 ## Docker-Based Agent Execution
 
 For production/server deployments, agents run in isolated Docker containers. This provides:
@@ -164,9 +180,10 @@ docker run --rm \
 2. Docker container spawns (2-5 seconds)
 3. Git clone --depth 1 (agent's workspace)
 4. Agent executes task
-5. Git commit + push to feature branch
-6. Container terminates
-7. Results returned to Orchestra
+5. (Optional) Pause for review in Orchestra UI
+6. User approves and finalizes (commit/push/PR)
+7. Container terminates
+8. Results returned to Orchestra
 ```
 
 ---

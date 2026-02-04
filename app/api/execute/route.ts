@@ -3,22 +3,20 @@ import { execute, type ExecuteRequest } from '@/lib/executor';
 import type { ExecutionConfig } from '@/lib/types';
 import {
   createSandbox,
-  finalizeSandbox,
-  cleanupSandbox,
   isGitRepo,
   type SandboxInfo,
 } from '@/lib/sandbox';
+import { spawn } from 'child_process';
 
 // Whitelist of allowed executor types
 const ALLOWED_EXECUTORS = ['claude', 'codex', 'gemini'] as const;
 
 export async function POST(request: NextRequest) {
   let sandboxInfo: SandboxInfo | null = null;
-  let originalProjectPath: string | undefined;
 
   try {
     const body = await request.json();
-    const { executor, prompt, options, executionConfig, projectPath, projectId, nodeId } = body;
+    const { executor, prompt, options, executionConfig, projectPath, projectId, nodeId, runId } = body;
 
     // Validate executor against whitelist
     if (!ALLOWED_EXECUTORS.includes(executor)) {
@@ -38,7 +36,6 @@ export async function POST(request: NextRequest) {
 
     const config = executionConfig as ExecutionConfig | undefined;
     const sandboxConfig = config?.sandbox;
-    originalProjectPath = projectPath;
 
     // Setup sandbox if enabled
     let effectiveProjectPath = projectPath;
@@ -46,7 +43,7 @@ export async function POST(request: NextRequest) {
       try {
         const isRepo = await isGitRepo(projectPath);
         if (isRepo) {
-          sandboxInfo = await createSandbox(projectPath, nodeId, sandboxConfig);
+          sandboxInfo = await createSandbox(projectPath, nodeId, sandboxConfig, { runId });
           effectiveProjectPath = sandboxInfo.worktreePath;
         }
       } catch (error) {
@@ -87,29 +84,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Finalize sandbox if it was created
-    let sandboxResult: { prUrl?: string; hasChanges: boolean } | null = null;
-    if (sandboxInfo && sandboxConfig) {
-      try {
-        sandboxResult = await finalizeSandbox(
-          sandboxInfo.worktreePath,
-          sandboxInfo.branchName,
-          sandboxConfig
-        );
-
-        // Cleanup sandbox on success if configured
-        if (sandboxConfig.cleanupOnSuccess !== false && originalProjectPath) {
-          await cleanupSandbox(
-            originalProjectPath,
-            sandboxInfo.worktreePath,
-            sandboxInfo.branchName
-          );
-        }
-      } catch (error) {
-        console.warn('Failed to finalize sandbox:', error);
-      }
-    }
-
     return NextResponse.json({
       status: result.status,
       output: result.output,
@@ -120,7 +94,8 @@ export async function POST(request: NextRequest) {
       sandboxInfo: sandboxInfo ? {
         worktreePath: sandboxInfo.worktreePath,
         branchName: sandboxInfo.branchName,
-        prUrl: sandboxResult?.prUrl,
+        baseBranch: sandboxConfig?.prBaseBranch || 'main',
+        finalizeAction: sandboxConfig?.finalizeAction,
       } : undefined,
     });
   } catch (error) {
@@ -149,7 +124,7 @@ export async function GET(request: NextRequest) {
     if (backend === 'docker-interactive') {
       const { isSessionRunning, getSessionOutput } = await import('@/lib/executors/docker-interactive');
       const running = await isSessionRunning(sessionId);
-      const output = running ? await getSessionOutput(sessionId) : '';
+      const output = running ? await getSessionOutput(sessionId) : await getDockerLogs(sessionId);
 
       return NextResponse.json({
         status: running ? 'running' : 'stopped',
@@ -177,4 +152,26 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+async function getDockerLogs(containerId: string): Promise<string> {
+  return new Promise((resolve) => {
+    const proc = spawn('docker', ['logs', containerId], {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on('close', () => resolve(stdout + stderr));
+    proc.on('error', () => resolve(''));
+  });
 }

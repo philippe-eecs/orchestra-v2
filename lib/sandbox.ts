@@ -13,7 +13,10 @@
  */
 
 import { spawn } from 'child_process';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import type { SandboxConfig } from './types';
+import { runGitCommand } from './git';
 
 export interface SandboxInfo {
   worktreePath: string;
@@ -32,14 +35,19 @@ export interface SandboxResult {
 export async function createSandbox(
   projectPath: string,
   nodeId: string,
-  config: SandboxConfig
+  config: SandboxConfig,
+  options?: { runId?: string }
 ): Promise<SandboxInfo> {
   const timestamp = Date.now();
   const prefix = config.branchPrefix || 'agent/';
-  const branchName = `${prefix}${nodeId}-${timestamp}`;
+  const runId = options?.runId ? options.runId.replace(/[^a-zA-Z0-9._-]/g, '') : undefined;
+  const branchName = `${prefix}${nodeId}-${runId ? `${runId}-` : ''}${timestamp}`;
 
-  // Worktree is created as a sibling to the project directory
-  const worktreePath = `${projectPath}/../sandbox-${nodeId}`;
+  // Worktree is created as a sibling to the project directory (hidden .orchestra folder)
+  const parentDir = path.resolve(projectPath, '..', '.orchestra', 'sandboxes');
+  await fs.mkdir(parentDir, { recursive: true });
+  const uniqueSuffix = Math.random().toString(36).slice(2, 8);
+  const worktreePath = path.join(parentDir, `${nodeId}-${timestamp}-${uniqueSuffix}`);
 
   // Create the worktree with a new branch
   await runGitCommand(projectPath, [
@@ -75,6 +83,11 @@ export async function finalizeSandbox(
     return { hasChanges: false };
   }
 
+  const finalizeAction = config.finalizeAction || 'pr';
+  if (finalizeAction === 'none') {
+    return { hasChanges: true };
+  }
+
   // Stage all changes
   await runGitCommand(worktreePath, ['add', '-A']);
 
@@ -85,17 +98,23 @@ export async function finalizeSandbox(
   // Get commit hash
   const commitHash = await runGitCommand(worktreePath, ['rev-parse', 'HEAD']);
 
-  // Push to remote
-  try {
-    await runGitCommand(worktreePath, ['push', '-u', 'origin', branchName]);
-  } catch (error) {
-    // Push might fail if no remote configured - continue anyway
-    console.warn(`Failed to push branch: ${error}`);
+  if (finalizeAction === 'commit') {
     return { hasChanges: true, commitHash: commitHash.trim() };
   }
 
-  // Create PR if configured
-  if (config.createPR !== false) {
+  // Push to remote if requested
+  if (finalizeAction === 'push' || finalizeAction === 'pr') {
+    try {
+      await runGitCommand(worktreePath, ['push', '-u', 'origin', branchName]);
+    } catch (error) {
+      // Push might fail if no remote configured - continue anyway
+      console.warn(`Failed to push branch: ${error}`);
+      return { hasChanges: true, commitHash: commitHash.trim() };
+    }
+  }
+
+  // Create PR if requested
+  if (finalizeAction === 'pr') {
     const baseBranch = config.prBaseBranch || 'main';
     try {
       const prUrl = await createPullRequest(worktreePath, branchName, baseBranch);
@@ -154,39 +173,6 @@ export async function getCurrentBranch(projectPath: string): Promise<string> {
 export async function hasUncommittedChanges(path: string): Promise<boolean> {
   const status = await runGitCommand(path, ['status', '--porcelain']);
   return status.trim().length > 0;
-}
-
-// ========== INTERNAL HELPERS ==========
-
-function runGitCommand(cwd: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn('git', args, {
-      cwd,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on('close', (code) => {
-      if (code === 0) {
-        resolve(stdout);
-      } else {
-        reject(new Error(stderr || `Git command failed with code ${code}`));
-      }
-    });
-
-    proc.on('error', reject);
-  });
 }
 
 async function createPullRequest(

@@ -73,6 +73,11 @@ const statusConfig: Record<NodeStatus, { icon: React.ReactNode; color: string; l
     color: 'text-blue-400',
     label: 'Running',
   },
+  awaiting_review: {
+    icon: <Eye className="w-4 h-4" />,
+    color: 'text-yellow-400',
+    label: 'Review',
+  },
   completed: {
     icon: <CheckCircle2 className="w-4 h-4" />,
     color: 'text-green-400',
@@ -418,7 +423,7 @@ function CustomNode({ data, selected }: CustomNodeProps) {
             <ContextItem
               key={i}
               context={ctx}
-              projectLocation={project?.location}
+              projectLocation={session?.sandboxInfo?.worktreePath || project?.location}
               nodes={project?.nodes}
             />
           ))}

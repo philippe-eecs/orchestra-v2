@@ -81,14 +81,15 @@ export default function AgentHub() {
     };
   });
 
-  // Sort by status (running first, then awaiting approval, then completed, then failed)
+  // Sort by status (running first, then review/approval, then completed, then failed)
   const sortedSessions = enrichedSessions.sort((a, b) => {
     const statusOrder = {
       starting: 0,
       running: 1,
-      awaiting_approval: 2,
-      completed: 3,
-      failed: 4,
+      awaiting_review: 2,
+      awaiting_approval: 3,
+      completed: 4,
+      failed: 5,
     };
     return statusOrder[a.status] - statusOrder[b.status];
   });
@@ -98,6 +99,9 @@ export default function AgentHub() {
   ).length;
   const awaitingApprovalCount = sortedSessions.filter(
     (s) => s.status === 'awaiting_approval'
+  ).length;
+  const awaitingReviewCount = sortedSessions.filter(
+    (s) => s.status === 'awaiting_review'
   ).length;
 
   const handleApprove = (sessionId: string, checkId: string) => {
@@ -172,6 +176,14 @@ export default function AgentHub() {
                 {awaitingApprovalCount} awaiting approval
               </Badge>
             )}
+            {awaitingReviewCount > 0 && (
+              <Badge
+                variant="outline"
+                className="text-xs bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+              >
+                {awaitingReviewCount} awaiting review
+              </Badge>
+            )}
           </div>
           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={toggleAgentHub}>
             {agentHubMinimized ? (
@@ -197,13 +209,17 @@ export default function AgentHub() {
                     className={cn(
                       'flex items-center justify-between px-3 py-2 rounded-md',
                       'bg-muted/50 hover:bg-muted transition-colors',
-                      session.status === 'awaiting_approval' && 'border border-yellow-500/30'
+                      (session.status === 'awaiting_approval' || session.status === 'awaiting_review') &&
+                        'border border-yellow-500/30'
                     )}
                   >
                     <div className="flex items-center gap-3">
                       {/* Status Icon */}
                       {(session.status === 'running' || session.status === 'starting') && (
                         <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+                      )}
+                      {session.status === 'awaiting_review' && (
+                        <Eye className="w-4 h-4 text-yellow-400" />
                       )}
                       {session.status === 'awaiting_approval' && (
                         <Clock className="w-4 h-4 text-yellow-400" />
@@ -257,7 +273,9 @@ export default function AgentHub() {
                           Approve
                         </Button>
                       )}
-                      {(session.status === 'running' || session.status === 'awaiting_approval') && (
+                      {(session.status === 'running' ||
+                        session.status === 'awaiting_approval' ||
+                        session.status === 'awaiting_review') && (
                         <>
                           <Button
                             variant="ghost"

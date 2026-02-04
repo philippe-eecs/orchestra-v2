@@ -152,13 +152,14 @@ export default function TerminalModal({
     }
   };
 
-  const statusVariant = session?.status === 'running' || session?.status === 'starting'
-    ? 'default'
-    : session?.status === 'completed'
-    ? 'secondary'
-    : session?.status === 'awaiting_approval'
-    ? 'outline'
-    : 'destructive';
+  const statusVariant =
+    session?.status === 'running' || session?.status === 'starting'
+      ? 'default'
+      : session?.status === 'completed'
+      ? 'secondary'
+      : session?.status === 'awaiting_approval' || session?.status === 'awaiting_review'
+      ? 'outline'
+      : 'destructive';
 
   return (
     <Dialog open={open} onOpenChange={handleDialogOpenChange}>
